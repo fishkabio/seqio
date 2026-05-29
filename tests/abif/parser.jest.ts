@@ -27,9 +27,9 @@ describe('parseAbif (high-level wrapper)', () => {
     // FWO_ valid.
     expect(p.chromatogram.baseOrder).toMatch(/^[ACGT]{4}$/);
 
-    // At least one of basecalled / raw channels has data.
+    // At least one of the DATA blocks has data.
     const hasAny =
-      hasSignals(p.chromatogram.basecalled) || hasSignals(p.chromatogram.raw);
+      hasSignals(p.chromatogram.data1To4) || hasSignals(p.chromatogram.data9To12);
     expect(hasAny).toBe(true);
   });
 
@@ -40,7 +40,7 @@ describe('parseAbif (high-level wrapper)', () => {
     expect(p.chromatogram.dataChannels[1]).toBeDefined();
     expect(p.chromatogram.dataChannels[4]).toBeDefined();
     expect(p.chromatogram.dataChannels[9]).toBeUndefined();
-    expect(channelMaxLength(p.chromatogram.raw)).toBeGreaterThan(0);
+    expect(channelMaxLength(p.chromatogram.data1To4)).toBeGreaterThan(0);
   });
 
   it('SPAC falls back to average peak spacing when missing or non-positive', () => {

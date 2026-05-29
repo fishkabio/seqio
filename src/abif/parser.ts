@@ -2,7 +2,7 @@
  * High-level "parse everything" wrapper around the raw + view layers.
  *
  * Returns a single ParsedAbif object with metadata, the FWO_-aware
- * basecalled / raw channel split, basecalls, and decoded directory entries
+ * DATA1..4 / DATA9..12 channel split, basecalls, and decoded directory entries
  * for diagnostics. Mirrors what typical viewers (chromatogram UIs, sample
  * inspectors) need from a single file.
  *
@@ -196,8 +196,8 @@ export function parseAbif(input: ArrayBuffer | Uint8Array, fileName = ''): Parse
   if (!/^[ACGT]{4}$/.test(baseOrder)) baseOrder = 'GATC';
 
   const dataChannels: Record<number, number[]> = {};
-  const basecalled: ChannelSignals = { A: [], C: [], G: [], T: [] };
-  const raw: ChannelSignals = { A: [], C: [], G: [], T: [] };
+  const data1To4: ChannelSignals = { A: [], C: [], G: [], T: [] };
+  const data9To12: ChannelSignals = { A: [], C: [], G: [], T: [] };
   const metadata: AbifMetadata = { comments: [] };
   const pbas: Record<number, string> = {};
   const pcon: Record<number, number[]> = {};
@@ -211,8 +211,8 @@ export function parseAbif(input: ArrayBuffer | Uint8Array, fileName = ''): Parse
 
     if (e.tagName === 'DATA' && decoded.kind === 'numbers') {
       dataChannels[e.tagNumber] = decoded.value;
-      if (e.tagNumber >= 1 && e.tagNumber <= 4) raw[channelKey(e.tagNumber - 1)] = decoded.value;
-      else if (e.tagNumber >= 9 && e.tagNumber <= 12) basecalled[channelKey(e.tagNumber - 9)] = decoded.value;
+      if (e.tagNumber >= 1 && e.tagNumber <= 4) data1To4[channelKey(e.tagNumber - 1)] = decoded.value;
+      else if (e.tagNumber >= 9 && e.tagNumber <= 12) data9To12[channelKey(e.tagNumber - 9)] = decoded.value;
     } else if (e.tagName === 'PBAS' && decoded.kind === 'string') {
       pbas[e.tagNumber] = decoded.value;
     } else if (e.tagName === 'PCON') {
@@ -287,10 +287,10 @@ export function parseAbif(input: ArrayBuffer | Uint8Array, fileName = ''): Parse
   if (!Number.isFinite(metadata.samplingRate) || (metadata.samplingRate ?? 0) <= 0) {
     const pos = baseCalls?.positions;
     const data9Len = Math.max(
-      basecalled.A.length,
-      basecalled.C.length,
-      basecalled.G.length,
-      basecalled.T.length,
+      data9To12.A.length,
+      data9To12.C.length,
+      data9To12.G.length,
+      data9To12.T.length,
     );
     if (pos && pos.length > 1) {
       metadata.samplingRate = (pos[pos.length - 1] - pos[0]) / (pos.length - 1);
@@ -299,7 +299,7 @@ export function parseAbif(input: ArrayBuffer | Uint8Array, fileName = ''): Parse
     }
   }
 
-  const chromatogram: AbifChromatogramBundle = { baseOrder, dataChannels, basecalled, raw };
+  const chromatogram: AbifChromatogramBundle = { baseOrder, dataChannels, data1To4, data9To12 };
 
   return {
     fileName,

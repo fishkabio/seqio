@@ -76,16 +76,33 @@ export interface AbifMetadata {
   comments: string[];
 }
 
-/** Full chromatogram bundle: all DATA channels, plus FWO_-aware A/C/G/T views. */
+/**
+ * Full chromatogram bundle: all DATA channels, plus FWO_-aware A/C/G/T views.
+ *
+ * The two block views are named after their on-disk tag number ranges. Their
+ * semantic content varies by instrument:
+ *
+ *   - DATA1..4  — on modern KB-basecaller-aware instruments (3130, 3500,
+ *                  3730) these are POST-PROCESSED traces (mobility-corrected,
+ *                  baseline-subtracted, color-separated). Basecallers operate
+ *                  on these. On older simpler instruments DATA1..4 IS the raw
+ *                  fluorescence.
+ *   - DATA9..12 — RAW fluorescence on instruments that produce both blocks.
+ *                  Absent on instruments that only write DATA1..8.
+ *
+ * Use {@link hasProcessedTraces} (data9To12 present) to detect whether
+ * DATA1..4 has already been processed and bypass your own baseline/color
+ * steps accordingly.
+ */
 export interface AbifChromatogramBundle {
   /** FWO_ value (e.g. "GATC"). */
   baseOrder: string;
   /** All DATA tags by tagNumber → trace. */
   dataChannels: Record<number, number[]>;
-  /** Basecalled traces (DATA9..12) mapped to A/C/G/T by FWO_. */
-  basecalled: ChannelSignals;
-  /** Raw traces (DATA1..4) mapped to A/C/G/T by FWO_. */
-  raw: ChannelSignals;
+  /** DATA1..4 mapped to A/C/G/T by FWO_. Post-processed on newer instruments, raw on older. */
+  data1To4: ChannelSignals;
+  /** DATA9..12 mapped to A/C/G/T by FWO_. Raw fluorescence; absent on older instruments. */
+  data9To12: ChannelSignals;
 }
 
 /** Rich result from {@link parseAbif} — everything the typical viewer needs. */
