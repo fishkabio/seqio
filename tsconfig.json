@@ -4,7 +4,7 @@
     "alwaysStrict": true,
     "lib": ["ES2022"],
     "module": "ESNext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "noEmitOnError": true,
     "noImplicitAny": true,
     "noImplicitThis": false,
@@ -20,10 +20,12 @@
     "strictNullChecks": true,
     "strictPropertyInitialization": true,
     "esModuleInterop": true,
+    "ignoreDeprecations": "6.0",
     "target": "ES2020",
     "declaration": true,
     "declarationMap": true,
-    "noEmit": true
+    "noEmit": true,
+    "types": ["jest", "node"]
   },
   "include": ["src", "tests", "index.ts"],
   "exclude": ["node_modules/**", "**/*.d.ts", "dist/**"]
