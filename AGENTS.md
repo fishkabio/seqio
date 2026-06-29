@@ -1,8 +1,9 @@
 # AGENTS.md
 
 `@fishka/seqio` is a TypeScript library that parses and writes bioinformatics
-sequencing file formats. ABIF (`.ab1` / `.abi`) is implemented today; SCF,
-FASTA, FASTQ are planned. The library is browser- and Node-compatible (uses
+sequencing file formats. ABIF (`.ab1` / `.abi`) and FASTA/FASTQ/.qual text
+writers are implemented today; SCF and FASTA/FASTQ reading are planned. The
+library is browser- and Node-compatible (uses
 `Uint8Array` + `DataView`, no Node `Buffer` dependency) and ships dual ESM +
 CJS builds with type declarations.
 
@@ -10,6 +11,7 @@ CJS builds with type declarations.
 
 ```
 ├── src/abif/           ABIF reader/writer + typed view + high-level parser
+├── src/fastx.ts        FASTA / FASTQ / .qual text writers (Phred+33)
 ├── tests/              Jest unit tests + .ab1 fixtures
 ├── dist/               Build output (ESM + CJS), generated, gitignored
 ├── index.ts            Root re-export of src/

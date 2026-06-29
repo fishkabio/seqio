@@ -5,8 +5,9 @@ Sequencing I/O — parsers and writers for bioinformatics file formats.
 Currently supports:
 
 - **ABIF** (`.ab1` / `.abi`) — chromatogram traces produced by ABI Sanger / fragment analysis instruments. Lossless round-trip, browser- and Node-compatible.
+- **FASTA / FASTQ / .qual** — text writers (Phred+33), pure and format-agnostic.
 
-Planned: SCF, FASTA, FASTQ.
+Planned: SCF; FASTA/FASTQ reading.
 
 ## Install
 
@@ -24,12 +25,12 @@ import { parseAbif } from '@fishka/seqio/abif';
 
 const result = parseAbif(uint8ArrayOrArrayBuffer, 'sample.ab1');
 
-result.baseCalls?.sequence;       // "ACGT..."
-result.baseCalls?.confidences;    // [40, 38, 41, ...]
-result.baseCalls?.positions;      // [13, 25, 38, ...] sample-point peaks
+result.baseCalls?.sequence; // "ACGT..."
+result.baseCalls?.confidences; // [40, 38, 41, ...]
+result.baseCalls?.positions; // [13, 25, 38, ...] sample-point peaks
 result.chromatogram.basecalled.A; // raw int16 trace for the A channel
-result.metadata.sampleName;       // SMPL tag
-result.metadata.samplingRate;     // SPAC tag (falls back to PLOC-derived spacing)
+result.metadata.sampleName; // SMPL tag
+result.metadata.samplingRate; // SPAC tag (falls back to PLOC-derived spacing)
 ```
 
 ### Low-level (entry-by-entry, round-trip)
@@ -44,6 +45,24 @@ setConfidences(file, [40, 38, 41, ...]);
 setPositions(file, [13, 25, 38, ...]);
 setAveragePeakSpacing(file, 12.5, 'my-basecaller');
 const out = writeAbif(file);
+```
+
+### Text export (FASTA / FASTQ / .qual)
+
+```ts
+import { formatFasta, formatFastq, formatQual, hasUsableQuality } from '@fishka/seqio';
+
+const record = { id: 'sample.ab1', sequence, qualities };
+
+formatFasta(record); // ">sample.ab1\nACGT...\n" (wrapped at 60)
+formatFasta(record, { lineWidth: 0 }); // single sequence line
+
+// Phred+33; scores clamped to [0, 93]. Only emit quality when it exists —
+// missing/all-255 PCON should stay FASTA-only rather than invent perfect Q.
+if (hasUsableQuality(qualities)) {
+  formatFastq(record); // "@sample.ab1\nACGT...\n+\n..."
+  formatQual(record); // ">sample.ab1\n40 38 41 ...\n"
+}
 ```
 
 ## Features
