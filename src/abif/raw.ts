@@ -19,25 +19,33 @@
  *     8   2    elementType    (int16)
  *    10   2    elementSize    (int16)
  *    12   4    elementCount   (int32)
- *    16   4    dataSize       (int32; total payload bytes; spec says count*size)
+ *    16   4    dataSize       (int32; total payload bytes — authoritative; for
+ *                              well-formed entries equals count*size, but user/
+ *                              opaque types may differ, so we read by dataSize)
  *    20   4    dataOffset     (int32) OR inline data if dataSize <= 4
  *    24   4    dataHandle     (int32; usually 0)
  *
- * Inline rule (per ABIF spec): when count*size <= 4 the payload bytes are
- * stored directly in the dataOffset field (left-aligned, padded to 4 bytes).
+ * Inline rule (per ABIF spec): when the declared dataSize <= 4 the payload bytes
+ * are stored directly in the dataOffset field (left-aligned, padded to 4 bytes).
  *
  * MacBinary preamble: some ABIF files (older Mac-origin) start with a 128-byte
  * MacBinary header before the actual ABIF magic. We detect and skip it.
  */
 
 import { asciiBytes, asciiString, asDataView, subview, tagNameFromInt32 } from './bytes';
-import { AbifEntry, AbifFile } from './types';
+import { AbifByteRange, AbifDirectory, AbifEntry, AbifFile } from './types';
 
 export const HEADER_SIZE = 128;
 export const ENTRY_SIZE = 28;
 
 /**
- * Parse an ABIF file from raw bytes.
+ * Parse an ABIF file from raw bytes into its verbatim directory structure.
+ *
+ * This is the RAW source of truth: it reads the tdir header and every entry as
+ * stored — real dataSize, dataOffset, numElements (see `entry.raw`), the 4 inline
+ * bytes, and the tdir/directory metadata — and interprets nothing. For a
+ * high-level, opinionated view (typed channels, basecalls, metadata) layer
+ * {@link parseAbif} on top.
  *
  * Accepts Uint8Array (works in Node and the browser). Node's Buffer extends
  * Uint8Array, so `readAbif(buffer)` and `readAbif(new Uint8Array(arrayBuffer))`
@@ -61,12 +69,17 @@ export function readAbif(bytes: Uint8Array): AbifFile {
     }
   }
   const base = macBinaryOffset;
+  // After skipping any MacBinary wrap, the ABIF part itself must still hold a full 128-byte header;
+  // otherwise reading version/tdir below would run past the DataView (a raw RangeError, not ours).
+  if (bytes.byteLength - base < HEADER_SIZE) {
+    throw new Error(`ABIF too small: ${bytes.byteLength - base} bytes after offset ${base}`);
+  }
   const view = asDataView(bytes);
 
   const version = view.getInt16(base + 4, false);
 
   // Header bytes [base+6 .. base+34) are a TdirEntry describing the directory itself.
-  const dirEntry = decodeEntry(bytes, view, base + 6);
+  const dirEntry = decodeEntry(bytes, view, base + 6, base);
   if (dirEntry.tagName !== 'tdir') {
     throw new Error(`Expected "tdir" header entry, got "${dirEntry.tagName}"`);
   }
@@ -74,7 +87,11 @@ export function readAbif(bytes: Uint8Array): AbifFile {
     throw new Error(`Expected dir element size ${ENTRY_SIZE}, got ${dirEntry.elementSize}`);
   }
 
-  const numEntries = dirEntry.elementCount;
+  // The directory's numElements (raw) is the authoritative entry count — like BioPython, we trust
+  // it rather than clamp against tdir.dataSize, which is a redundant byte-count that some writers
+  // desync. Physical bounds are enforced below; a negative/garbage count just yields 0 entries.
+  const rawDirCount = dirEntry.raw?.elementCount ?? dirEntry.elementCount;
+  const numEntries = Math.max(0, rawDirCount);
   // tdir.dataSize is always > 4 (28*N), so the dataOffset field is an external offset.
   const dirOffset = view.getInt32(base + 6 + 20, false);
   if (dirOffset < 0 || dirOffset + numEntries * ENTRY_SIZE > bytes.byteLength - base) {
@@ -85,10 +102,89 @@ export function readAbif(bytes: Uint8Array): AbifFile {
 
   const entries: AbifEntry[] = [];
   for (let i = 0; i < numEntries; i++) {
-    entries.push(decodeEntry(bytes, view, base + dirOffset + i * ENTRY_SIZE));
+    entries.push(decodeEntry(bytes, view, base + dirOffset + i * ENTRY_SIZE, base));
   }
 
-  return { version, entries, macBinaryOffset };
+  // Root directory (tdir) header, as read — its dataSize may exceed numEntries*28 (directory padding).
+  const dirDataSize = dirEntry.raw?.dataSize ?? numEntries * ENTRY_SIZE;
+  const entriesEnd = base + dirOffset + numEntries * ENTRY_SIZE;
+  const padLen = Math.min(
+    Math.max(0, dirDataSize - numEntries * ENTRY_SIZE),
+    Math.max(0, bytes.byteLength - entriesEnd),
+  );
+  const tdir: AbifDirectory = {
+    entryCount: numEntries, // effective count actually read (== entries.length)
+    rawEntryCount: rawDirCount, // tdir numElements verbatim, before any reconciliation
+    elementType: dirEntry.elementType, // 1023 (tdir)
+    tagNumber: dirEntry.tagNumber, // usually 1
+    entrySize: dirEntry.elementSize,
+    dataSize: dirDataSize,
+    dataOffset: dirOffset,
+    dataOffsetBytes: dirEntry.raw?.dataOffsetBytes ?? new Uint8Array(4),
+    dataHandle: dirEntry.dataHandle,
+    paddingBytes: new Uint8Array(subview(bytes, entriesEnd, padLen)),
+  };
+
+  // Reserved header bytes [base+34 .. base+128) — verbatim, so a raw reader keeps the whole header.
+  const headerReserved = new Uint8Array(subview(bytes, base + 6 + ENTRY_SIZE, HEADER_SIZE - 6 - ENTRY_SIZE));
+
+  // The MacBinary preamble bytes themselves, when present — verbatim, so the wrapper is reproducible.
+  const macBinaryHeader = macBinaryOffset === 128 ? new Uint8Array(subview(bytes, 0, 128)) : undefined;
+
+  const unreferencedRanges = computeUnreferencedRanges(bytes, base, dirOffset, dirDataSize, entries, macBinaryOffset);
+
+  return { version, tdir, entries, macBinaryOffset, macBinaryHeader, headerReserved, unreferencedRanges };
+}
+
+/**
+ * Find the file's physical byte ranges that no header/directory/entry payload covers — orphaned
+ * blocks, trailing padding, etc. Computes the complement of every referenced interval so a raw
+ * reader can account for all bytes without the writer having to be byte-exact.
+ */
+function computeUnreferencedRanges(
+  bytes: Uint8Array,
+  base: number,
+  dirOffset: number,
+  dirDataSize: number,
+  entries: AbifEntry[],
+  macBinaryOffset: number,
+): AbifByteRange[] {
+  const total = bytes.byteLength;
+  const covered: Array<[number, number]> = [];
+  if (macBinaryOffset === 128) covered.push([0, 128]); // preamble
+  covered.push([base, base + HEADER_SIZE]); // 128-byte header (magic/version/tdir/reserved)
+  // Directory spans the bytes actually read (numElements entries) OR the declared dataSize when it is
+  // larger (padding) — whichever is bigger, so a desynced dataSize < numElements*28 doesn't mislabel
+  // already-read entries as orphan bytes. A negative dataSize collapses to the physical entry span.
+  const dirCovered = Math.max(entries.length * ENTRY_SIZE, Math.max(0, dirDataSize));
+  covered.push([base + dirOffset, base + dirOffset + dirCovered]);
+  for (const e of entries) {
+    if (e.raw && !e.raw.inline) {
+      const start = base + e.raw.dataOffset;
+      covered.push([start, start + e.payload.byteLength]); // external payload
+    }
+  }
+
+  const norm = covered
+    .map(([s, en]): [number, number] => [Math.max(0, Math.min(s, total)), Math.max(0, Math.min(en, total))])
+    .filter(([s, en]) => en > s)
+    .sort((a, b) => a[0] - b[0]);
+
+  const merged: Array<[number, number]> = [];
+  for (const [s, en] of norm) {
+    const last = merged[merged.length - 1];
+    if (last && s <= last[1]) last[1] = Math.max(last[1], en);
+    else merged.push([s, en]);
+  }
+
+  const gaps: AbifByteRange[] = [];
+  let cursor = 0;
+  for (const [s, en] of merged) {
+    if (s > cursor) gaps.push({ offset: cursor, bytes: new Uint8Array(subview(bytes, cursor, s - cursor)) });
+    cursor = Math.max(cursor, en);
+  }
+  if (cursor < total) gaps.push({ offset: cursor, bytes: new Uint8Array(subview(bytes, cursor, total - cursor)) });
+  return gaps;
 }
 
 /**
@@ -97,17 +193,23 @@ export function readAbif(bytes: Uint8Array): AbifFile {
  * Two robustness measures applied here that BioPython also uses and that real
  * ABIF files in the wild require:
  *
- *   1. The inline rule uses `elementCount * elementSize` (the structural size),
- *      not the declared `dataSize` field — they should agree, but the writer
- *      sometimes desynced them.
+ *   1. The payload is exactly `dataSize` bytes — the authoritative directory field.
+ *      ABIF allows `numElements * elementSize != dataSize` for user/opaque types,
+ *      so we never derive the payload length from count*size (that both truncates
+ *      a larger declared payload and over-reads a smaller one).
  *
- *   2. When the declared `dataSize` is smaller than `count*size`, trust the
- *      smaller value for payload reading. Some older instruments and edited
- *      files (e.g. BioPython A_forward.ab1) have `dataSize` set to the actual
- *      written size while `elementCount` was left at the original (larger)
- *      value, so reading the full count*size range would land in adjacent data.
+ *   2. Inline vs external follows the spec: inline iff `dataSize <= 4` (the payload
+ *      fits in the 4-byte dataOffset field). Data > 4 bytes is always external,
+ *      even when count*size <= 4. We fall back to count*size only when the declared
+ *      field is negative/garbage.
+ *
+ *   3. `elementCount` is reconciled down to what the payload can hold, so a desynced
+ *      (over-large) count can't drive readers past the real bytes.
+ *
+ *   4. External payload offsets are relative to the ABIF start, so we add `base`
+ *      (the MacBinary preamble length) when reading them.
  */
-function decodeEntry(bytes: Uint8Array, view: DataView, off: number): AbifEntry {
+function decodeEntry(bytes: Uint8Array, view: DataView, off: number, base: number): AbifEntry {
   const tagName = asciiString(subview(bytes, off, 4));
   const tagNumber = view.getInt32(off + 4, false);
   const elementType = view.getInt16(off + 8, false);
@@ -117,61 +219,74 @@ function decodeEntry(bytes: Uint8Array, view: DataView, off: number): AbifEntry 
   const dataHandle = view.getInt32(off + 24, false);
 
   const computedDataSize = Math.max(0, rawElementCount * Math.max(0, elementSize));
-  const effectiveDataSize = Math.min(computedDataSize, Math.max(0, declaredDataSize));
-  // Inline is a structural property of the on-disk record: based on RAW count*size.
-  const inline = computedDataSize <= 4;
-  // For iteration we use the smaller of declared and computed, clamped to size
-  // boundaries, so we don't over-read past the real payload.
-  const elementCount =
-    elementSize > 0 && declaredDataSize >= 0 && declaredDataSize < computedDataSize
-      ? Math.floor(declaredDataSize / elementSize)
-      : rawElementCount;
+  // Payload length is the declared dataSize; a negative/garbage declared field falls back to the
+  // computed count*size (consistent with the inline decision below).
+  const payloadSize = declaredDataSize >= 0 ? declaredDataSize : computedDataSize;
+  // Inline iff dataSize <= 4; fall back to computed size only for an invalid declared field.
+  const inline = declaredDataSize >= 0 ? declaredDataSize <= 4 : computedDataSize <= 4;
+  // Reconcile the element count down to what the payload holds, and never expose a negative count
+  // (a malformed numElements would otherwise crash Array/TypedArray helpers downstream). When
+  // elementSize <= 0 the per-element stride is unknown, so cap by payloadSize (≤ 1 byte/element)
+  // rather than trusting the raw count — otherwise a typed getter reads past a 0-byte payload.
+  const elementCount = Math.max(
+    0,
+    elementSize > 0 ? Math.min(rawElementCount, Math.floor(payloadSize / elementSize)) : Math.min(rawElementCount, payloadSize),
+  );
 
   let payload: Uint8Array;
+  let dataOffset: number;
   if (inline) {
-    payload = new Uint8Array(subview(bytes, off + 20, effectiveDataSize));
+    dataOffset = -1;
+    payload = new Uint8Array(subview(bytes, off + 20, Math.min(4, payloadSize)));
   } else {
-    const dataOffset = view.getInt32(off + 20, false);
-    if (dataOffset < 0 || dataOffset + effectiveDataSize > bytes.byteLength) {
+    dataOffset = view.getInt32(off + 20, false);
+    const at = base + dataOffset;
+    if (dataOffset < 0 || at + payloadSize > bytes.byteLength) {
       throw new Error(
-        `Entry ${tagName}${tagNumber}: payload out of bounds (offset=${dataOffset}, size=${effectiveDataSize})`,
+        `Entry ${tagName}${tagNumber}: payload out of bounds (offset=${dataOffset}, size=${payloadSize})`,
       );
     }
-    payload = new Uint8Array(subview(bytes, dataOffset, effectiveDataSize));
+    payload = new Uint8Array(subview(bytes, at, payloadSize));
   }
 
-  return { tagName, tagNumber, elementType, elementSize, elementCount, payload, dataHandle };
+  // The raw 4 bytes of the data/offset slot, verbatim (payload+padding when inline, offset when external).
+  const dataOffsetBytes = new Uint8Array(subview(bytes, off + 20, 4));
+
+  return {
+    tagName,
+    tagNumber,
+    elementType,
+    elementSize,
+    elementCount,
+    payload,
+    dataHandle,
+    raw: { elementCount: rawElementCount, dataSize: declaredDataSize, dataOffset, inline, dataOffsetBytes },
+  };
 }
 
 /**
  * Serialize an AbifFile back to a Uint8Array.
  *
  * Layout produced: header (128 B) + directory (N*28 B) + payload block.
- * External payloads are packed tightly in entry order. Inline payloads
- * (count*size <= 4) live entirely inside their directory entry.
+ * External payloads are packed tightly in entry order. Payloads <= 4 bytes are
+ * stored inline inside their directory entry.
  *
- * The output is not bit-identical to the input if the original had a different
- * physical layout (e.g. payloads before directory), but the *meaning*
- * round-trips: readAbif(writeAbif(f)) reproduces the same entries structurally.
- *
- * MacBinary preamble is not preserved by writeAbif.
+ * Meaning-lossless, not byte-exact: the payload bytes, tag fields and dataSize
+ * (= payload length) round-trip, but physical layout does not — payloads are
+ * repacked, directory/header padding and any MacBinary preamble are dropped. A
+ * byte-exact layout-preserving mode is a possible future opt-in.
  */
 export function writeAbif(file: AbifFile): Uint8Array {
   const numEntries = file.entries.length;
   const dirOffset = HEADER_SIZE;
   const dirSize = numEntries * ENTRY_SIZE;
 
-  // Compute external payload offsets.
+  // Compute external payload offsets. The payload bytes are authoritative: dataSize
+  // written = payload.byteLength (may differ from count*size for user/opaque types).
   let payloadCursor = dirOffset + dirSize;
   const externalOffsets: number[] = new Array(numEntries);
   for (let i = 0; i < numEntries; i++) {
-    const e = file.entries[i];
-    const dataSize = e.elementCount * e.elementSize;
-    if (e.payload.byteLength !== dataSize) {
-      throw new Error(
-        `Entry ${e.tagName}${e.tagNumber}: payload length ${e.payload.byteLength} != dataSize ${dataSize}`,
-      );
-    }
+    const dataSize = file.entries[i].payload.byteLength;
     if (dataSize > 4) {
       externalOffsets[i] = payloadCursor;
       payloadCursor += dataSize;
@@ -241,7 +356,7 @@ function writeEntry(
   outView.setInt16(off + 8, e.elementType, false);
   outView.setInt16(off + 10, e.elementSize, false);
   outView.setInt32(off + 12, e.elementCount, false);
-  const dataSize = externalDataSize ?? e.elementCount * e.elementSize;
+  const dataSize = externalDataSize ?? e.payload.byteLength;
   outView.setInt32(off + 16, dataSize, false);
 
   if (explicitDirOffset !== undefined) {

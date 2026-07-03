@@ -7,7 +7,7 @@
 
 import { asciiString, asDataView } from './bytes';
 import { findEntry } from './raw';
-import { AbifFile } from './types';
+import { AbifDataChannelRole, AbifEntry, AbifFile } from './types';
 
 /** Get DATA<n> as a signed-int16 array, or undefined. */
 export function getDataChannel(file: AbifFile, n: number): Int16Array | undefined {
@@ -34,20 +34,25 @@ export function getDataChannel(file: AbifFile, n: number): Int16Array | undefine
 export function getFwo(file: AbifFile): string {
   const e = findEntry(file, 'FWO_', 1);
   if (!e) return 'GATC';
-  return asciiString(e.payload);
+  // Read only the declared elements — payload may carry trailing padding beyond elementCount.
+  return asciiString(e.payload.subarray(0, e.elementCount));
 }
 
 /**
- * True when the file carries BOTH DATA1..4 and DATA9..12. Newer ABI-style
- * instruments produce both: DATA1..4 is post-processed (mobility-corrected,
- * baseline-subtracted, color-separated) and DATA9..12 is raw fluorescence.
- * Older instruments produce only DATA1..4 (which IS the raw signal).
- *
- * Callers that re-process traces (basecallers) should detect this and bypass
- * their own baseline-subtraction / color-matrix steps when DATA1..4 is
- * already cleaned.
+ * Whether an FWO_ string is a genuine dye order: a permutation of A/C/G/T with all
+ * four bases distinct. `"GATC"` passes; `"AAAA"` (regex-valid but degenerate) does
+ * not — mapping four channels through it would collapse them onto one base.
  */
-export function hasProcessedTraces(file: AbifFile): boolean {
+export function isFwoPermutation(fwo: string): boolean {
+  return /^[ACGT]{4}$/.test(fwo) && new Set(fwo).size === 4;
+}
+
+/**
+ * Fact: the file carries a second dye-trace block, DATA9..12 (all four tags), in
+ * addition to DATA1..4. Reports presence only — it does NOT say which block is
+ * raw and which is analyzed/processed; that convention isn't stored in the file.
+ */
+export function hasData9To12Block(file: AbifFile): boolean {
   return !!(
     findEntry(file, 'DATA', 9) &&
     findEntry(file, 'DATA', 10) &&
@@ -57,25 +62,48 @@ export function hasProcessedTraces(file: AbifFile): boolean {
 }
 
 /**
- * Map from base letter ("A"|"C"|"G"|"T") to the DATA tag number that holds
- * its RAW fluorescence channel.
+ * Spec-defined role of a DATA<n> tag, limited to the numbers the ABIF spec names:
  *
- * ABIF stores up to 12 DATA tags. KB-basecaller-aware instruments (3130, 3500,
- * ...) use DATA1..4 for processed traces and DATA9..12 for raw. Older / simpler
- * instruments produce only DATA1..8 where DATA1..4 ARE the raw traces.
+ *   - `'trace'`     — dye-signal channels: DATA1..4 (raw dyes 1-4), DATA9..12
+ *                     (analyzed dyes 1-4), and the two optional 5th-dye blocks
+ *                     DATA105 (raw dye 5) and DATA205 (analyzed dye 5).
+ *   - `'telemetry'` — DATA5..8: instrument run telemetry (voltage, current,
+ *                     power, temperature), one value per scan — NOT dye signal.
+ *   - `'other'`     — any other DATA number. The spec does not enumerate higher
+ *                     extra-dye tags (106/206/…), so we don't claim a role for them.
  *
- * This helper always returns the DATA1..4 mapping (the convention used by
- * basecallers operating on raw signal). Use {@link hasProcessedTraces} to
- * detect whether DATA1..4 has been pre-processed and bypass baseline/color
- * steps accordingly.
- *
- * The dye-to-channel order within each block is given by FWO_. If
- * FWO_="GATC" then G→1, A→2, T→3, C→4.
+ * A fact from the ABIF specification, not an inference about content.
  */
-export function getRawChannelMap(file: AbifFile): Record<'A' | 'C' | 'G' | 'T', number> {
+export function dataChannelRole(n: number): AbifDataChannelRole {
+  if (n >= 5 && n <= 8) return 'telemetry';
+  if ((n >= 1 && n <= 4) || (n >= 9 && n <= 12) || n === 105 || n === 205) return 'trace';
+  return 'other';
+}
+
+/**
+ * Whether the file declares its sequence already reverse-complemented, from the
+ * RevC1 flag (int16, non-zero = true). undefined when RevC1 is absent. Reported
+ * as-is; the consumer decides how to act on it.
+ */
+export function getReverseComplemented(file: AbifFile): boolean | undefined {
+  const e = findEntry(file, 'RevC', 1);
+  if (!e) return undefined;
+  const view = asDataView(e.payload);
+  return e.payload.byteLength >= 2 ? view.getInt16(0, false) !== 0 : e.payload.some(b => b !== 0);
+}
+
+/**
+ * Map from base letter ("A"|"C"|"G"|"T") to the DATA1..4 tag number that holds
+ * its channel, using the dye order declared by FWO_. If FWO_="GATC" then
+ * G→1, A→2, T→3, C→4.
+ *
+ * This follows the file's own FWO_ declaration for the DATA1..4 block; it makes
+ * no claim about whether that block is raw or processed.
+ */
+export function getChannelMap(file: AbifFile): Record<'A' | 'C' | 'G' | 'T', number> {
   const fwo = getFwo(file);
-  if (!/^[ACGT]{4}$/.test(fwo)) {
-    throw new Error(`FWO_ malformed: "${fwo}"`);
+  if (!isFwoPermutation(fwo)) {
+    throw new Error(`FWO_ is not a permutation of A/C/G/T: "${fwo}"`);
   }
   return {
     [fwo[0]]: 1,
@@ -87,10 +115,12 @@ export function getRawChannelMap(file: AbifFile): Record<'A' | 'C' | 'G' | 'T', 
 
 /** Get PBAS sequence (prefer PBAS2 over PBAS1). undefined if neither present. */
 export function getSequence(file: AbifFile): string | undefined {
+  // Bound by elementCount (payload may be padded) and drop trailing NULs, matching parseAbif.
+  const read = (e: AbifEntry): string => asciiString(e.payload.subarray(0, e.elementCount)).replace(/\0+$/g, '');
   const e2 = findEntry(file, 'PBAS', 2);
-  if (e2) return asciiString(e2.payload);
+  if (e2) return read(e2);
   const e1 = findEntry(file, 'PBAS', 1);
-  if (e1) return asciiString(e1.payload);
+  if (e1) return read(e1);
   return undefined;
 }
 

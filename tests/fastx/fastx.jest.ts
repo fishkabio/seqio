@@ -4,7 +4,7 @@ import { readAbif } from '../../src/abif/raw';
 import { getConfidences, getSequence } from '../../src/abif/view';
 import { formatFasta, formatFastq, formatQual, hasUsableQuality, MAX_PHRED } from '../../src/fastx';
 
-const BASECALLED = path.join(__dirname, '..', 'fixtures', 'A_forward.ab1');
+const BASECALLED = path.join(__dirname, '..', 'fixtures', 'basecalled.ab1');
 
 describe('formatFasta', () => {
   it('writes a header with description and wraps the sequence at 60 by default', () => {
@@ -112,12 +112,12 @@ describe('hasUsableQuality', () => {
   });
 });
 
-describe('fastx on a basecalled fixture (A_forward.ab1)', () => {
+describe('fastx on a basecalled fixture (basecalled.ab1)', () => {
   const file = readAbif(fs.readFileSync(BASECALLED));
   const sequence = getSequence(file);
   const confidences = getConfidences(file);
   if (sequence === undefined || confidences === undefined) {
-    throw new Error('fixture A_forward.ab1 is expected to carry PBAS + PCON');
+    throw new Error('fixture basecalled.ab1 is expected to carry PBAS + PCON');
   }
   // Real Sanger Q-scores sit well under the ceiling, so clamping is a round, not a cap.
   const clamped = confidences.map(q => Math.min(MAX_PHRED, Math.max(0, q)));
@@ -128,8 +128,8 @@ describe('fastx on a basecalled fixture (A_forward.ab1)', () => {
   });
 
   it('produces a 4-line FASTQ whose quality line decodes back to the scores', () => {
-    const lines = formatFastq({ id: 'A_forward', sequence, qualities: confidences }).split('\n');
-    expect(lines[0]).toBe('@A_forward');
+    const lines = formatFastq({ id: 'basecalled', sequence, qualities: confidences }).split('\n');
+    expect(lines[0]).toBe('@basecalled');
     expect(lines[1]).toBe(sequence);
     expect(lines[2]).toBe('+');
     expect(lines[3].length).toBe(sequence.length);
@@ -140,8 +140,8 @@ describe('fastx on a basecalled fixture (A_forward.ab1)', () => {
   });
 
   it('wraps FASTA at 60 and the residues round-trip', () => {
-    const lines = formatFasta({ id: 'A_forward', sequence }).split('\n');
-    expect(lines[0]).toBe('>A_forward');
+    const lines = formatFasta({ id: 'basecalled', sequence }).split('\n');
+    expect(lines[0]).toBe('>basecalled');
     const body = lines.slice(1).filter(l => l.length > 0);
     expect(body.join('')).toBe(sequence);
     const nonLast = body.slice(0, -1);
@@ -149,8 +149,8 @@ describe('fastx on a basecalled fixture (A_forward.ab1)', () => {
   });
 
   it('writes .qual that parses back to the same scores', () => {
-    const lines = formatQual({ id: 'A_forward', qualities: confidences }).split('\n');
-    expect(lines[0]).toBe('>A_forward');
+    const lines = formatQual({ id: 'basecalled', qualities: confidences }).split('\n');
+    expect(lines[0]).toBe('>basecalled');
     const nums = lines
       .slice(1)
       .filter(l => l.length > 0)

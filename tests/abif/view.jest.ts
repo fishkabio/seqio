@@ -1,15 +1,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { readAbif } from '../../src/abif/raw';
+import { readAbif, upsertEntry } from '../../src/abif/raw';
 import {
+  dataChannelRole,
+  getChannelMap,
   getConfidences,
   getDataChannel,
   getFwo,
   getPositions,
-  getRawChannelMap,
+  getReverseComplemented,
   getSamplingRate,
   getSequence,
-  hasProcessedTraces,
+  hasData9To12Block,
 } from '../../src/abif/view';
 import {
   averagePeakSpacing,
@@ -21,8 +23,9 @@ import {
 } from '../../src/abif/setters';
 import { writeAbif } from '../../src/abif/raw';
 
-const RAW = path.join(__dirname, '..', 'fixtures', 'Int_F_12_A7.ab1');
-const ABF = path.join(__dirname, '..', 'fixtures', 'A_forward.ab1');
+const RAW = path.join(__dirname, '..', 'fixtures', 'raw-no-basecalls.ab1');
+const ABF = path.join(__dirname, '..', 'fixtures', 'basecalled.ab1');
+const REVC = path.join(__dirname, '..', 'fixtures', 'revc-flag.ab1');
 
 describe('abif-view', () => {
   it('reads DATA1..8 as int16 arrays on a raw file', () => {
@@ -40,7 +43,7 @@ describe('abif-view', () => {
     const f = readAbif(fs.readFileSync(RAW));
     const fwo = getFwo(f);
     expect(fwo).toMatch(/^[ACGT]{4}$/);
-    const map = getRawChannelMap(f);
+    const map = getChannelMap(f);
     const channels = Object.values(map).sort();
     expect(channels).toEqual([1, 2, 3, 4]);
     expect(map[fwo[0] as 'A']).toBe(1);
@@ -119,10 +122,10 @@ describe('abif-view', () => {
 
   it('ensureRawDataChannels duplicates DATA1..4 into DATA9..12 when absent', () => {
     const f = readAbif(fs.readFileSync(RAW));
-    expect(hasProcessedTraces(f)).toBe(false);
+    expect(hasData9To12Block(f)).toBe(false);
 
     ensureRawDataChannels(f);
-    expect(hasProcessedTraces(f)).toBe(true);
+    expect(hasData9To12Block(f)).toBe(true);
 
     for (let i = 1; i <= 4; i++) {
       const src = getDataChannel(f, i);
@@ -140,6 +143,35 @@ describe('abif-view', () => {
     const after1 = f.entries.length;
     ensureRawDataChannels(f);
     expect(f.entries.length).toBe(after1);
+  });
+
+  describe('facts, not verdicts', () => {
+    it('dataChannelRole labels only the DATA numbers the spec names', () => {
+      // Standard four dyes (raw + analyzed) plus the two named 5th-dye blocks 105/205.
+      for (const n of [1, 2, 3, 4, 9, 10, 11, 12, 105, 205]) expect(dataChannelRole(n)).toBe('trace');
+      for (const n of [5, 6, 7, 8]) expect(dataChannelRole(n)).toBe('telemetry');
+      // The spec does not enumerate 106/206/…, so we don't claim a role for them.
+      for (const n of [0, 13, 100, 104, 106, 206, 999]) expect(dataChannelRole(n)).toBe('other');
+    });
+
+    it('getReverseComplemented reads RevC1 (true/false), ignoring other tag numbers', () => {
+      // revc-flag.ab1 carries RevC1 = 0; raw-no-basecalls has no RevC tag.
+      expect(getReverseComplemented(readAbif(fs.readFileSync(REVC)))).toBe(false);
+      expect(getReverseComplemented(readAbif(fs.readFileSync(RAW)))).toBeUndefined();
+      // Synthesize RevC1 = 1 (true) and a stray RevC2 (must be ignored — spec defines only RevC1).
+      const int16 = (v: number): Uint8Array => {
+        const b = new Uint8Array(2);
+        new DataView(b.buffer).setInt16(0, v, false);
+        return b;
+      };
+      const trueFile = readAbif(fs.readFileSync(RAW));
+      upsertEntry(trueFile, 'RevC', 1, int16(1), { elementType: 4, elementSize: 2, elementCount: 1 });
+      expect(getReverseComplemented(trueFile)).toBe(true);
+
+      const revc2Only = readAbif(fs.readFileSync(RAW));
+      upsertEntry(revc2Only, 'RevC', 2, int16(1), { elementType: 4, elementSize: 2, elementCount: 1 });
+      expect(getReverseComplemented(revc2Only)).toBeUndefined();
+    });
   });
 
   describe('average peak spacing (SPAC)', () => {

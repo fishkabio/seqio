@@ -5,7 +5,7 @@
 
 import { asciiBytes, asDataView } from './bytes';
 import { findEntry, upsertEntry } from './raw';
-import { hasProcessedTraces } from './view';
+import { hasData9To12Block } from './view';
 import { AbifFile } from './types';
 
 /** Set PBAS2 (replaces if present). */
@@ -100,7 +100,7 @@ export function averagePeakSpacing(positions: ArrayLike<number>): number {
  * No-op when DATA9..12 already exist.
  */
 export function ensureRawDataChannels(file: AbifFile): void {
-  if (hasProcessedTraces(file)) return;
+  if (hasData9To12Block(file)) return;
   for (let i = 1; i <= 4; i++) {
     const src = findEntry(file, 'DATA', i);
     if (!src) continue;
