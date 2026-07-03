@@ -1,6 +1,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { readAbif, upsertEntry } from '../../src/abif/raw';
+import { readAbif, upsertEntry, writeAbif } from '../../src/abif/raw';
+import {
+  averagePeakSpacing,
+  ensureRawDataChannels,
+  setAveragePeakSpacing,
+  setConfidences,
+  setPositions,
+  setSequence,
+} from '../../src/abif/setters';
 import {
   dataChannelRole,
   getChannelMap,
@@ -13,15 +21,6 @@ import {
   getSequence,
   hasData9To12Block,
 } from '../../src/abif/view';
-import {
-  averagePeakSpacing,
-  ensureRawDataChannels,
-  setAveragePeakSpacing,
-  setConfidences,
-  setPositions,
-  setSequence,
-} from '../../src/abif/setters';
-import { writeAbif } from '../../src/abif/raw';
 
 const RAW = path.join(__dirname, '..', 'fixtures', 'raw-no-basecalls.ab1');
 const ABF = path.join(__dirname, '..', 'fixtures', 'basecalled.ab1');

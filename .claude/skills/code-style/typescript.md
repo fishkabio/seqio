@@ -53,5 +53,3 @@
 - Use a class-level `lp` field for the class name prefix: `private readonly lp = 'ClassName';`
 - In each method that logs, create a local `lp` variable: `const lp = \`${this.lp}.methodName:\`;`
 - Use the local `lp` for all log messages in that method: `console.log(\`${lp} Message\`);`
-
-

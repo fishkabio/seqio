@@ -1,8 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { readAbif, writeAbif, findEntry } from '../../src/abif/raw';
-import { getConfidences, getDataChannel, getFwo, getSequence } from '../../src/abif/view';
 import { parseAbif } from '../../src/abif/parser';
+import { findEntry, readAbif, writeAbif } from '../../src/abif/raw';
+import { getConfidences, getDataChannel, getFwo, getSequence } from '../../src/abif/view';
 
 const RAW = path.join(__dirname, '..', 'fixtures', 'raw-no-basecalls.ab1');
 const ABF = path.join(__dirname, '..', 'fixtures', 'basecalled.ab1');
@@ -83,7 +83,10 @@ describe('abif-raw', () => {
     dv.setInt32(26, dirAt, false); // dataOffset
     for (let i = 0; i < N; i++) {
       const at = dirAt + i * 28;
-      buf.set(Array.from('USER', c => c.charCodeAt(0)), at);
+      buf.set(
+        Array.from('USER', c => c.charCodeAt(0)),
+        at,
+      );
       dv.setInt32(at + 4, i + 1, false); // tagNumber 1, 2
       dv.setInt16(at + 8, 1024, false); // user elementType
       dv.setInt16(at + 10, 1, false); // elementSize
@@ -193,7 +196,10 @@ describe('abif-raw', () => {
       dv.setInt32(22, 28, false);
       dv.setInt32(26, dirAt, false);
       const tag = o.tag ?? 'USER';
-      buf.set(Array.from(tag, c => c.charCodeAt(0)), dirAt);
+      buf.set(
+        Array.from(tag, c => c.charCodeAt(0)),
+        dirAt,
+      );
       dv.setInt32(dirAt + 4, o.tagNumber ?? 1, false);
       dv.setInt16(dirAt + 8, o.elementType, false);
       dv.setInt16(dirAt + 10, o.elementSize, false);
@@ -208,7 +214,9 @@ describe('abif-raw', () => {
 
     it('reads the full inline payload when dataSize > count*size (finding: no truncation)', () => {
       // elementSize=1, elementCount=1 → count*size=1, but dataSize=4 → payload is 4 bytes.
-      const f = readAbif(oneUserEntry({ elementType: 1024, elementSize: 1, elementCount: 1, dataSize: 4, inline: [65, 66, 67, 68] }));
+      const f = readAbif(
+        oneUserEntry({ elementType: 1024, elementSize: 1, elementCount: 1, dataSize: 4, inline: [65, 66, 67, 68] }),
+      );
       const e = findEntry(f, 'USER', 1)!;
       expect(Array.from(e.payload)).toEqual([65, 66, 67, 68]);
       expect(e.raw).toMatchObject({ inline: true, dataSize: 4, dataOffset: -1, elementCount: 1 });
@@ -216,7 +224,9 @@ describe('abif-raw', () => {
 
     it('exposes the full 4-byte inline slot, including stale bytes beyond dataSize', () => {
       // dataSize=2 → 2 meaningful bytes, but the inline slot carries 2 more (stale) bytes.
-      const f = readAbif(oneUserEntry({ elementType: 1024, elementSize: 1, elementCount: 1, dataSize: 2, inline: [65, 66, 0x99, 0xff] }));
+      const f = readAbif(
+        oneUserEntry({ elementType: 1024, elementSize: 1, elementCount: 1, dataSize: 2, inline: [65, 66, 0x99, 0xff] }),
+      );
       const e = findEntry(f, 'USER', 1)!;
       expect(Array.from(e.payload)).toEqual([65, 66]); // meaningful bytes = dataSize
       expect(Array.from(e.raw!.dataOffsetBytes)).toEqual([65, 66, 0x99, 0xff]); // full slot, stale visible
@@ -225,7 +235,9 @@ describe('abif-raw', () => {
 
     it('reconciles an external entry whose dataSize is smaller than elementCount*elementSize', () => {
       // elementType 4 (short, 2B) × 4 elems would be 8 bytes, but dataSize says 6 (external, >4).
-      const f = readAbif(oneUserEntry({ elementType: 4, elementSize: 2, elementCount: 4, dataSize: 6, external: [0, 1, 0, 2, 0, 3] }));
+      const f = readAbif(
+        oneUserEntry({ elementType: 4, elementSize: 2, elementCount: 4, dataSize: 6, external: [0, 1, 0, 2, 0, 3] }),
+      );
       const e = findEntry(f, 'USER', 1)!;
       expect(e.raw!.inline).toBe(false); // dataSize 6 > 4 → external
       expect(e.raw!.dataSize).toBe(6); // declared, verbatim
@@ -237,14 +249,18 @@ describe('abif-raw', () => {
 
     it('reads external when dataSize > 4 even though count*size <= 4 (finding: not inline)', () => {
       // count*size = 1 (would look inline) but dataSize=6 → the payload is external.
-      const f = readAbif(oneUserEntry({ elementType: 1024, elementSize: 1, elementCount: 1, dataSize: 6, external: [1, 2, 3, 4, 5, 6] }));
+      const f = readAbif(
+        oneUserEntry({ elementType: 1024, elementSize: 1, elementCount: 1, dataSize: 6, external: [1, 2, 3, 4, 5, 6] }),
+      );
       const e = findEntry(f, 'USER', 1)!;
       expect(Array.from(e.payload)).toEqual([1, 2, 3, 4, 5, 6]);
       expect(e.raw).toMatchObject({ inline: false, dataSize: 6, dataOffset: 156, elementCount: 1 });
     });
 
     it('treats declared dataSize<=4 as inline even when count*size>4, clamping element count', () => {
-      const f = readAbif(oneUserEntry({ elementType: 1024, elementSize: 2, elementCount: 4, dataSize: 4, inline: [65, 66, 67, 68] }));
+      const f = readAbif(
+        oneUserEntry({ elementType: 1024, elementSize: 2, elementCount: 4, dataSize: 4, inline: [65, 66, 67, 68] }),
+      );
       const e = findEntry(f, 'USER', 1)!;
       expect(e.raw?.inline).toBe(true);
       expect(Array.from(e.payload)).toEqual([65, 66, 67, 68]);
@@ -253,7 +269,9 @@ describe('abif-raw', () => {
     });
 
     it('round-trips such an opaque entry meaning-losslessly (writeAbif uses payload length)', () => {
-      const f = readAbif(oneUserEntry({ elementType: 1024, elementSize: 1, elementCount: 1, dataSize: 6, external: [1, 2, 3, 4, 5, 6] }));
+      const f = readAbif(
+        oneUserEntry({ elementType: 1024, elementSize: 1, elementCount: 1, dataSize: 6, external: [1, 2, 3, 4, 5, 6] }),
+      );
       const e = findEntry(readAbif(writeAbif(f)), 'USER', 1)!;
       expect(Array.from(e.payload)).toEqual([1, 2, 3, 4, 5, 6]);
       expect(e.raw?.dataSize).toBe(6);
@@ -285,7 +303,10 @@ describe('abif-raw', () => {
       dv.setInt32(18, 1, false);
       dv.setInt32(22, 28, false);
       dv.setInt32(26, dirAt, false);
-      buf.set(Array.from(o.tag ?? 'USER', c => c.charCodeAt(0)), dirAt);
+      buf.set(
+        Array.from(o.tag ?? 'USER', c => c.charCodeAt(0)),
+        dirAt,
+      );
       dv.setInt32(dirAt + 4, o.tagNumber ?? 1, false);
       dv.setInt16(dirAt + 8, o.elementType, false);
       dv.setInt16(dirAt + 10, o.elementSize, false);
@@ -298,7 +319,14 @@ describe('abif-raw', () => {
     }
 
     it('does not throw on a short date payload (falls back to raw bytes)', () => {
-      const bytes = oneEntry({ tag: 'RUND', elementType: 10, elementSize: 1, elementCount: 2, dataSize: 2, inline: [7, 0xe8] });
+      const bytes = oneEntry({
+        tag: 'RUND',
+        elementType: 10,
+        elementSize: 1,
+        elementCount: 2,
+        dataSize: 2,
+        inline: [7, 0xe8],
+      });
       expect(() => parseAbif(bytes)).not.toThrow();
       const p = parseAbif(bytes);
       expect(p.entries.find(x => x.tag === 'RUND')!.decoded.kind).toBe('unknown');
@@ -312,7 +340,9 @@ describe('abif-raw', () => {
     });
 
     it('handles a negative dataSize without dropping the payload (falls back to count*size)', () => {
-      const f = readAbif(oneEntry({ tag: 'USER', elementType: 2, elementSize: 1, elementCount: 1, dataSize: -5, inline: [65] }));
+      const f = readAbif(
+        oneEntry({ tag: 'USER', elementType: 2, elementSize: 1, elementCount: 1, dataSize: -5, inline: [65] }),
+      );
       const e = findEntry(f, 'USER', 1)!;
       expect(e.elementCount).toBe(1);
       expect(Array.from(e.payload)).toEqual([65]);
@@ -322,33 +352,79 @@ describe('abif-raw', () => {
     it('does not throw on numeric types whose payload is shorter than the element width', () => {
       // type 5/7 (4 bytes/elem) and 8 (8 bytes) with only 2 payload bytes → no RangeError.
       for (const elementType of [3, 4, 5, 7, 8]) {
-        const bytes = oneEntry({ tag: 'USER', elementType, elementSize: 2, elementCount: 1, dataSize: 2, inline: [0, 1] });
+        const bytes = oneEntry({
+          tag: 'USER',
+          elementType,
+          elementSize: 2,
+          elementCount: 1,
+          dataSize: 2,
+          inline: [0, 1],
+        });
         expect(() => parseAbif(bytes)).not.toThrow();
       }
     });
 
     it('getFwo/getSequence read only elementCount, ignoring trailing padding', () => {
       // FWO_: 4 declared chars but dataSize 5 ("ACGT\0").
-      const fwoBytes = oneEntry({ tag: 'FWO_', elementType: 2, elementSize: 1, elementCount: 4, dataSize: 5, external: [65, 67, 71, 84, 0] });
+      const fwoBytes = oneEntry({
+        tag: 'FWO_',
+        elementType: 2,
+        elementSize: 1,
+        elementCount: 4,
+        dataSize: 5,
+        external: [65, 67, 71, 84, 0],
+      });
       expect(getFwo(readAbif(fwoBytes))).toBe('ACGT'); // not "ACGT\0"
       expect(parseAbif(fwoBytes).chromatogram.baseOrder).toBe('ACGT'); // real order, not the GATC fallback
       // PBAS2: 2 declared bases but dataSize 3 (inline slot "AC\0", padded).
-      const pbasFile = readAbif(oneEntry({ tag: 'PBAS', tagNumber: 2, elementType: 2, elementSize: 1, elementCount: 2, dataSize: 3, inline: [65, 67, 0, 0] }));
+      const pbasFile = readAbif(
+        oneEntry({
+          tag: 'PBAS',
+          tagNumber: 2,
+          elementType: 2,
+          elementSize: 1,
+          elementCount: 2,
+          dataSize: 3,
+          inline: [65, 67, 0, 0],
+        }),
+      );
       expect(getSequence(pbasFile)).toBe('AC');
     });
 
     it('clamps elementCount to the payload when elementSize <= 0 (typed getters stay well-formed)', () => {
       // PCON2 claims 5 elements at elementSize=0, but dataSize=0 → nothing to read.
-      const f = readAbif(oneEntry({ tag: 'PCON', tagNumber: 2, elementType: 2, elementSize: 0, elementCount: 5, dataSize: 0 }));
+      const f = readAbif(
+        oneEntry({ tag: 'PCON', tagNumber: 2, elementType: 2, elementSize: 0, elementCount: 5, dataSize: 0 }),
+      );
       expect(findEntry(f, 'PCON', 2)!.elementCount).toBe(0); // not the disk's 5
       expect(getConfidences(f)).toEqual([]); // number[], never [undefined, undefined, ...]
       // Negative elementSize is bounded the same way — by the payload byte count.
-      const g = readAbif(oneEntry({ tag: 'PCON', tagNumber: 2, elementType: 2, elementSize: -1, elementCount: 9, dataSize: 3, inline: [7, 8, 9, 0] }));
+      const g = readAbif(
+        oneEntry({
+          tag: 'PCON',
+          tagNumber: 2,
+          elementType: 2,
+          elementSize: -1,
+          elementCount: 9,
+          dataSize: 3,
+          inline: [7, 8, 9, 0],
+        }),
+      );
       expect(getConfidences(g)).toEqual([7, 8, 9]);
     });
 
     it('clamps a negative numElements so downstream helpers do not crash', () => {
-      const f = readAbif(oneEntry({ tag: 'DATA', tagNumber: 1, elementType: 4, elementSize: 2, elementCount: -3, dataSize: 4, inline: [0, 1, 0, 2] }));
+      const f = readAbif(
+        oneEntry({
+          tag: 'DATA',
+          tagNumber: 1,
+          elementType: 4,
+          elementSize: 2,
+          elementCount: -3,
+          dataSize: 4,
+          inline: [0, 1, 0, 2],
+        }),
+      );
       const e = findEntry(f, 'DATA', 1)!;
       expect(e.elementCount).toBe(0); // reconciled to a safe non-negative count
       expect(e.raw?.elementCount).toBe(-3); // raw numElements preserved verbatim

@@ -29,7 +29,7 @@ module.exports = [
           caughtErrors: 'all',
         },
       ],
-      'eqeqeq': 'error',
+      eqeqeq: 'error',
       'unused-imports/no-unused-imports': 'error',
     },
     ignores: ['**/*.js', 'dist', 'local', 'node_modules'],

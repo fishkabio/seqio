@@ -12,10 +12,9 @@
 
 import { asciiString, asDataView, subview } from './bytes';
 import { readAbif } from './raw';
-import { getFwo, isFwoPermutation } from './view';
 import {
-  AbifBaseCallVariant,
   AbifBaseCalls,
+  AbifBaseCallVariant,
   AbifChromatogramBundle,
   AbifDecodedValue,
   AbifDirEntry,
@@ -24,6 +23,7 @@ import {
   ChannelSignals,
   ParsedAbif,
 } from './types';
+import { getFwo, isFwoPermutation } from './view';
 
 const TYPE_NAMES: Record<number, string> = {
   1: 'byte',
@@ -299,15 +299,17 @@ export function parseAbif(input: ArrayBuffer | Uint8Array, fileName = ''): Parse
   const baseCallVariants: AbifBaseCallVariant[] = Object.keys(pbas)
     .map(Number)
     .sort((a, b) => a - b)
-    .map((v): AbifBaseCallVariant => ({
-      version: v,
-      role: v === 1 ? 'edited' : v === 2 ? 'called' : 'unknown',
-      // As stored: case is preserved (lower-case can encode masking/edits). The
-      // uppercased convenience view lives on `baseCalls`, not here.
-      sequence: pbas[v],
-      confidences: pcon[v] ?? [],
-      positions: ploc[v] ?? [],
-    }));
+    .map(
+      (v): AbifBaseCallVariant => ({
+        version: v,
+        role: v === 1 ? 'edited' : v === 2 ? 'called' : 'unknown',
+        // As stored: case is preserved (lower-case can encode masking/edits). The
+        // uppercased convenience view lives on `baseCalls`, not here.
+        sequence: pbas[v],
+        confidences: pcon[v] ?? [],
+        positions: ploc[v] ?? [],
+      }),
+    );
 
   // Basecalls: prefer PBAS2 (called) over PBAS1 (edited) — a spec-role choice. Test key
   // presence, not string truthiness, so an existing-but-empty PBAS2 is still honored.
@@ -323,11 +325,19 @@ export function parseAbif(input: ArrayBuffer | Uint8Array, fileName = ''): Parse
     // broken array when nothing matches, so baseCalls stays self-consistent (baseCallVariants stays strict).
     let confidences = pcon[pbasVersion] ?? [];
     if (confidences.length !== seq.length) {
-      confidences = Object.keys(pcon).map(Number).map(v => pcon[v]).find(c => c.length === seq.length) ?? [];
+      confidences =
+        Object.keys(pcon)
+          .map(Number)
+          .map(v => pcon[v])
+          .find(c => c.length === seq.length) ?? [];
     }
     let positions = ploc[pbasVersion] ?? [];
     if (positions.length !== seq.length) {
-      positions = Object.keys(ploc).map(Number).map(v => ploc[v]).find(pp => pp.length === seq.length) ?? [];
+      positions =
+        Object.keys(ploc)
+          .map(Number)
+          .map(v => ploc[v])
+          .find(pp => pp.length === seq.length) ?? [];
     }
     baseCalls = { sequence: seq, confidences, positions, pbasVersion };
   }
@@ -335,12 +345,7 @@ export function parseAbif(input: ArrayBuffer | Uint8Array, fileName = ''): Parse
   // SPAC fallback: derive from PLOC positions or DATA9 length when missing.
   if (!Number.isFinite(metadata.samplingRate) || (metadata.samplingRate ?? 0) <= 0) {
     const pos = baseCalls?.positions;
-    const data9Len = Math.max(
-      data9To12.A.length,
-      data9To12.C.length,
-      data9To12.G.length,
-      data9To12.T.length,
-    );
+    const data9Len = Math.max(data9To12.A.length, data9To12.C.length, data9To12.G.length, data9To12.T.length);
     if (pos && pos.length > 1) {
       metadata.samplingRate = (pos[pos.length - 1] - pos[0]) / (pos.length - 1);
     } else if (baseCalls && baseCalls.sequence.length > 0 && data9Len > 0) {

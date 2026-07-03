@@ -230,7 +230,9 @@ function decodeEntry(bytes: Uint8Array, view: DataView, off: number, base: numbe
   // rather than trusting the raw count — otherwise a typed getter reads past a 0-byte payload.
   const elementCount = Math.max(
     0,
-    elementSize > 0 ? Math.min(rawElementCount, Math.floor(payloadSize / elementSize)) : Math.min(rawElementCount, payloadSize),
+    elementSize > 0
+      ? Math.min(rawElementCount, Math.floor(payloadSize / elementSize))
+      : Math.min(rawElementCount, payloadSize),
   );
 
   let payload: Uint8Array;
@@ -400,9 +402,7 @@ export function upsertEntry(
   defaults: { elementType: number; elementSize: number; elementCount: number },
 ): void {
   if (payload.byteLength !== defaults.elementCount * defaults.elementSize) {
-    throw new Error(
-      `upsertEntry ${name}${number}: payload length ${payload.byteLength} != count*size`,
-    );
+    throw new Error(`upsertEntry ${name}${number}: payload length ${payload.byteLength} != count*size`);
   }
   const existing = findEntry(file, name, number);
   if (existing) {

@@ -5,8 +5,8 @@
 
 import { asciiBytes, asDataView } from './bytes';
 import { findEntry, upsertEntry } from './raw';
-import { hasData9To12Block } from './view';
 import { AbifFile } from './types';
+import { hasData9To12Block } from './view';
 
 /** Set PBAS2 (replaces if present). */
 export function setSequence(file: AbifFile, sequence: string): void {

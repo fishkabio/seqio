@@ -1,10 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { parseAbif, hasSignals, channelMaxLength } from '../../src/abif/parser';
-import { readAbif, upsertEntry, writeAbif } from '../../src/abif/raw';
 import { asciiBytes } from '../../src/abif/bytes';
-import { getChannelMap } from '../../src/abif/view';
+import { channelMaxLength, hasSignals, parseAbif } from '../../src/abif/parser';
+import { readAbif, upsertEntry, writeAbif } from '../../src/abif/raw';
 import { AbifFile } from '../../src/abif/types';
+import { getChannelMap } from '../../src/abif/view';
 
 const ABF = path.join(__dirname, '..', 'fixtures', 'basecalled.ab1');
 const RAW = path.join(__dirname, '..', 'fixtures', 'raw-no-basecalls.ab1');
@@ -60,8 +60,7 @@ describe('parseAbif (high-level wrapper)', () => {
     expect(p.chromatogram.baseOrder).toMatch(/^[ACGT]{4}$/);
 
     // At least one of the DATA blocks has data.
-    const hasAny =
-      hasSignals(p.chromatogram.data1To4) || hasSignals(p.chromatogram.data9To12);
+    const hasAny = hasSignals(p.chromatogram.data1To4) || hasSignals(p.chromatogram.data9To12);
     expect(hasAny).toBe(true);
   });
 
@@ -209,7 +208,11 @@ describe('parseAbif (high-level wrapper)', () => {
     });
 
     it('preserves zero PCON Q-scores, including trailing ones (0 is a valid score)', () => {
-      for (const qs of [[42, 0], [0, 42], [0, 0]]) {
+      for (const qs of [
+        [42, 0],
+        [0, 42],
+        [0, 0],
+      ]) {
         const p = parseAbif(
           withTags(f => {
             setPbas(f, 2, 'AC');
@@ -237,7 +240,9 @@ describe('parseAbif (high-level wrapper)', () => {
     it('falls back to GATC when FWO_ is not a real permutation of A/C/G/T', () => {
       for (const bad of ['AAAA', 'GATT']) {
         const p = parseAbif(
-          withTags(f => upsertEntry(f, 'FWO_', 1, asciiBytes(bad), { elementType: 2, elementSize: 1, elementCount: bad.length })),
+          withTags(f =>
+            upsertEntry(f, 'FWO_', 1, asciiBytes(bad), { elementType: 2, elementSize: 1, elementCount: bad.length }),
+          ),
         );
         expect(p.chromatogram.baseOrder).toBe('GATC');
       }
@@ -245,7 +250,11 @@ describe('parseAbif (high-level wrapper)', () => {
 
     it('getChannelMap throws on a non-permutation FWO_ but maps a valid one', () => {
       const withFwo = (s: string): AbifFile =>
-        readAbif(withTags(f => upsertEntry(f, 'FWO_', 1, asciiBytes(s), { elementType: 2, elementSize: 1, elementCount: s.length })));
+        readAbif(
+          withTags(f =>
+            upsertEntry(f, 'FWO_', 1, asciiBytes(s), { elementType: 2, elementSize: 1, elementCount: s.length }),
+          ),
+        );
       expect(() => getChannelMap(withFwo('AAAA'))).toThrow(/permutation/i);
       expect(() => getChannelMap(withFwo('GATT'))).toThrow(/permutation/i);
       expect(getChannelMap(withFwo('GATC'))).toEqual({ G: 1, A: 2, T: 3, C: 4 });
@@ -303,23 +312,68 @@ describe('parseAbif (high-level wrapper)', () => {
       revc: boolean | undefined;
     }
     const cases: FixtureExpect[] = [
-      { file: ABF, name: 'basecalled', tdir: { entryCount: 171, dataSize: 4928, dataOffset: 204515, paddingLen: 140 }, data: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], pbas: { 1: 809, 2: 809 }, pconHead: [7, 5, 5], fwo: 'GATC', revc: undefined },
-      { file: EDITED, name: 'edited-differs', tdir: { entryCount: 170, dataSize: 4928, dataOffset: 212662, paddingLen: 168 }, data: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], pbas: { 1: 376, 2: 413 }, pconHead: [2, 1, 1], fwo: 'GATC', revc: false },
-      { file: REVC, name: 'revc-flag', tdir: { entryCount: 123, dataSize: 3584, dataOffset: 296403, paddingLen: 140 }, data: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], pbas: { 1: 1165, 2: 1165 }, pconHead: [20, 3, 4], fwo: 'GATC', revc: false },
-      { file: RAW, name: 'raw-no-basecalls', tdir: { entryCount: 81, dataSize: 2268, dataOffset: 128, paddingLen: 0 }, data: [1, 2, 3, 4, 5, 6, 7, 8], pbas: {}, fwo: 'GATC', revc: undefined },
+      {
+        file: ABF,
+        name: 'basecalled',
+        tdir: { entryCount: 171, dataSize: 4928, dataOffset: 204515, paddingLen: 140 },
+        data: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        pbas: { 1: 809, 2: 809 },
+        pconHead: [7, 5, 5],
+        fwo: 'GATC',
+        revc: undefined,
+      },
+      {
+        file: EDITED,
+        name: 'edited-differs',
+        tdir: { entryCount: 170, dataSize: 4928, dataOffset: 212662, paddingLen: 168 },
+        data: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        pbas: { 1: 376, 2: 413 },
+        pconHead: [2, 1, 1],
+        fwo: 'GATC',
+        revc: false,
+      },
+      {
+        file: REVC,
+        name: 'revc-flag',
+        tdir: { entryCount: 123, dataSize: 3584, dataOffset: 296403, paddingLen: 140 },
+        data: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        pbas: { 1: 1165, 2: 1165 },
+        pconHead: [20, 3, 4],
+        fwo: 'GATC',
+        revc: false,
+      },
+      {
+        file: RAW,
+        name: 'raw-no-basecalls',
+        tdir: { entryCount: 81, dataSize: 2268, dataOffset: 128, paddingLen: 0 },
+        data: [1, 2, 3, 4, 5, 6, 7, 8],
+        pbas: {},
+        fwo: 'GATC',
+        revc: undefined,
+      },
     ];
     for (const c of cases) {
       it(`${c.name}: tdir / DATA ranges / PBAS-PCON-PLOC lengths / FWO / RevC`, () => {
         const bytes = new Uint8Array(fs.readFileSync(c.file));
         const f = readAbif(bytes);
         const p = parseAbif(bytes);
-        expect(f.tdir).toMatchObject({ entryCount: c.tdir.entryCount, rawEntryCount: c.tdir.entryCount, entrySize: 28, dataSize: c.tdir.dataSize, dataOffset: c.tdir.dataOffset });
+        expect(f.tdir).toMatchObject({
+          entryCount: c.tdir.entryCount,
+          rawEntryCount: c.tdir.entryCount,
+          entrySize: 28,
+          dataSize: c.tdir.dataSize,
+          dataOffset: c.tdir.dataOffset,
+        });
         expect(f.tdir.paddingBytes.length).toBe(c.tdir.paddingLen);
         // dataOffsetBytes is the tdir's 4-byte offset slot, big-endian → equals dataOffset.
         const off = f.tdir.dataOffsetBytes;
         expect(new DataView(off.buffer, off.byteOffset, 4).getInt32(0, false)).toBe(c.tdir.dataOffset);
         expect(f.entries.length).toBe(c.tdir.entryCount);
-        expect(Object.keys(p.chromatogram.dataChannels).map(Number).sort((a, b) => a - b)).toEqual(c.data);
+        expect(
+          Object.keys(p.chromatogram.dataChannels)
+            .map(Number)
+            .sort((a, b) => a - b),
+        ).toEqual(c.data);
         const pbasLens: Record<number, number> = {};
         for (const v of p.baseCallVariants) {
           pbasLens[v.version] = v.sequence.length;
