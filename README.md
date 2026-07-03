@@ -2,14 +2,15 @@
 
 Part of [fishka.bio](https://fishka.bio) — free browser-based bioinformatics tools.
 
-Sequencing I/O — parsers and writers for bioinformatics file formats.
+Browser- and Node-compatible sequencing file I/O.
 
-Currently supports:
+Current API:
 
-- **ABIF** (`.ab1` / `.abi`) — chromatogram traces produced by ABI Sanger / fragment analysis instruments. Meaning-lossless round-trip (every entry preserved), browser- and Node-compatible.
-- **FASTA / FASTQ / .qual** — text writers (Phred+33), pure and format-agnostic.
+- **ABIF** (`.ab1` / `.abi`) parser, typed chromatogram view, raw reader/writer,
+  and mutation helpers.
+- **FASTA / FASTQ / .qual** text writers with Phred+33 quality encoding.
 
-Planned: SCF; FASTA/FASTQ reading.
+Planned: SCF and FASTA/FASTQ readers.
 
 ## Install
 
@@ -17,71 +18,79 @@ Planned: SCF; FASTA/FASTQ reading.
 npm install @fishka/seqio
 ```
 
-## Use
+## ABIF
 
-### Quick parse (typed view + metadata)
+Use `parseAbif()` when you want a ready-to-render chromatogram, base calls, and
+metadata from an `.ab1` file.
 
 ```ts
 import { parseAbif } from '@fishka/seqio/abif';
-// or: import { parseAbif } from '@fishka/seqio';
 
 const result = parseAbif(uint8ArrayOrArrayBuffer, 'sample.ab1');
 
-result.baseCalls?.sequence; // "ACGT..." (preferred/called version, upper-cased)
-result.baseCalls?.confidences; // [40, 38, 41, ...]
-result.baseCalls?.positions; // [13, 25, 38, ...] sample-point peaks
-result.baseCallVariants; // every PBAS version present: [{ version, role: 'called'|'edited', ... }]
-result.chromatogram.data9To12.A; // A-channel int16 trace of the DATA9..12 block
-result.chromatogram.data1To4.A; // A-channel int16 trace of the DATA1..4 block
-result.metadata.sampleName; // SMPL tag
-result.metadata.samplingRate; // SPAC tag (falls back to PLOC-derived spacing)
+result.baseCalls?.sequence; // preferred called sequence, upper-cased
+result.baseCalls?.confidences; // PCON quality scores
+result.baseCalls?.positions; // PLOC peak positions
+result.baseCallVariants; // all PBAS/PCON/PLOC versions found
+result.chromatogram.data9To12.A; // A trace mapped through FWO_
+result.metadata.sampleName;
 ```
 
-### Low-level (entry-by-entry, round-trip)
+Use `readAbif()` / `writeAbif()` when you need entry-level access or want to
+preserve unknown vendor tags during a round trip.
 
 ```ts
 import { readAbif, writeAbif, findEntry, upsertEntry } from '@fishka/seqio/abif';
-import { setSequence, setConfidences, setPositions, setAveragePeakSpacing } from '@fishka/seqio/abif';
+import { setAveragePeakSpacing, setConfidences, setPositions, setSequence } from '@fishka/seqio/abif';
 
 const file = readAbif(bytes);
+
+findEntry(file, 'SMPL', 1);
+const commentPayload = new TextEncoder().encode('basecalled');
+upsertEntry(file, 'CMNT', 1, commentPayload, {
+  elementType: 2,
+  elementSize: 1,
+  elementCount: commentPayload.byteLength,
+});
+
 setSequence(file, 'ACGT...');
-setConfidences(file, [40, 38, 41, ...]);
-setPositions(file, [13, 25, 38, ...]);
+setConfidences(file, [40, 38, 41]);
+setPositions(file, [13, 25, 38]);
 setAveragePeakSpacing(file, 12.5, 'my-basecaller');
+
 const out = writeAbif(file);
 ```
 
-### Text export (FASTA / FASTQ / .qual)
+## FASTA / FASTQ / .qual
 
 ```ts
 import { formatFasta, formatFastq, formatQual, hasUsableQuality } from '@fishka/seqio';
 
 const record = { id: 'sample.ab1', sequence, qualities };
 
-formatFasta(record); // ">sample.ab1\nACGT...\n" (wrapped at 60)
+formatFasta(record); // wrapped at 60 residues by default
 formatFasta(record, { lineWidth: 0 }); // single sequence line
 
-// Phred+33; scores clamped to [0, 93]. Only emit quality when it exists —
-// missing/all-255 PCON should stay FASTA-only rather than invent perfect Q.
 if (hasUsableQuality(qualities)) {
-  formatFastq(record); // "@sample.ab1\nACGT...\n+\n..."
-  formatQual(record); // ">sample.ab1\n40 38 41 ...\n"
+  formatFastq(record); // Phred+33, scores clamped to [0, 93]
+  formatQual(record);
 }
 ```
 
-## Features
+## API
 
-- Browser- and Node-compatible (Uint8Array + DataView, no Node Buffer dependency).
-- Meaning-lossless round-trip: every directory entry preserved as a raw payload, so
-  `readAbif(writeAbif(f))` reproduces the same entries. The output is not byte-for-byte
-  identical to the input (payloads are repacked, `dataSize` normalized, MacBinary/padding
-  dropped); a byte-exact layout-preserving writer is a possible future opt-in.
-- MacBinary preamble support.
-- BioPython-compatible declared-vs-computed dataSize clamp.
-- PLOC read/written as unsigned int16 (preserves traces > 32k scans).
-- SPAC accepts both float32 (spec) and long (legacy) element types.
-- PCON/PLOC version fallback when PBAS2 ships without matching PCON2/PLOC2.
-- `ensureRawDataChannels()` helper for older DATA1..8-only files.
+- `parseAbif(input, fileName?)`
+- `readAbif(bytes)`, `writeAbif(file)`, `findEntry()`, `findEntries()`,
+  `upsertEntry()`
+- `getSequence()`, `getConfidences()`, `getPositions()`, `getDataChannel()`,
+  `getChannelMap()`, `getSamplingRate()`
+- `setSequence()`, `setConfidences()`, `setPositions()`,
+  `setAveragePeakSpacing()`, `ensureRawDataChannels()`
+- `formatFasta()`, `formatFastq()`, `formatQual()`, `hasUsableQuality()`
+
+The library uses `Uint8Array` and `DataView`, with no Node `Buffer` dependency.
+ABIF writing is meaning-lossless rather than byte-for-byte layout preserving:
+unknown entries are kept, but payloads may be repacked and padding normalized.
 
 ## License
 
