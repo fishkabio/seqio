@@ -1,5 +1,7 @@
 # @fishka/seqio
 
+Part of [fishka.bio](https://fishka.bio) — free browser-based bioinformatics tools.
+
 Sequencing I/O — parsers and writers for bioinformatics file formats.
 
 Currently supports:
