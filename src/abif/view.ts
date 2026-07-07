@@ -7,7 +7,7 @@
 
 import { findEntry } from './abif-format';
 import { asciiString, asDataView } from './bytes';
-import { AbifDataChannelRole, AbifEntry, AbifFile } from './types';
+import { AbifDataChannelRole, AbifFile } from './types';
 
 /** Get DATA<n> as a signed-int16 array, or undefined. */
 export function getDataChannel(file: AbifFile, n: number): Int16Array | undefined {
@@ -115,13 +115,19 @@ export function getChannelMap(file: AbifFile): Record<'A' | 'C' | 'G' | 'T', num
 
 /** Get PBAS sequence (prefer PBAS2 over PBAS1). undefined if neither present. */
 export function getSequence(file: AbifFile): string | undefined {
+  return getSequenceForVersion(file, 2) ?? getSequenceForVersion(file, 1);
+}
+
+/**
+ * Get PBAS<version> exactly as stored — no called/edited preference, unlike
+ * {@link getSequence}. Used where each basecall version must be handled on its
+ * own (e.g. cropping every version a file carries, not just the preferred one).
+ */
+export function getSequenceForVersion(file: AbifFile, version: number): string | undefined {
+  const e = findEntry(file, 'PBAS', version);
+  if (!e) return undefined;
   // Bound by elementCount (payload may be padded) and drop trailing NULs, matching parseAbif.
-  const read = (e: AbifEntry): string => asciiString(e.payload.subarray(0, e.elementCount)).replace(/\0+$/g, '');
-  const e2 = findEntry(file, 'PBAS', 2);
-  if (e2) return read(e2);
-  const e1 = findEntry(file, 'PBAS', 1);
-  if (e1) return read(e1);
-  return undefined;
+  return asciiString(e.payload.subarray(0, e.elementCount)).replace(/\0+$/g, '');
 }
 
 /**
@@ -132,7 +138,15 @@ export function getSequence(file: AbifFile): string | undefined {
  * values ARE the Q-scores — we read raw bytes regardless of declared type.
  */
 export function getConfidences(file: AbifFile): number[] | undefined {
-  const e = findEntry(file, 'PCON', 2) ?? findEntry(file, 'PCON', 1);
+  return getConfidencesForVersion(file, 2) ?? getConfidencesForVersion(file, 1);
+}
+
+/**
+ * Get PCON<version> exactly as stored — no called/edited preference, unlike
+ * {@link getConfidences}. See {@link getSequenceForVersion} for why this exists.
+ */
+export function getConfidencesForVersion(file: AbifFile, version: number): number[] | undefined {
+  const e = findEntry(file, 'PCON', version);
   if (!e) return undefined;
   const out: number[] = new Array(e.elementCount);
   for (let i = 0; i < e.elementCount; i++) out[i] = e.payload[i];
@@ -147,10 +161,18 @@ export function getConfidences(file: AbifFile): number[] | undefined {
  * if interpreted as signed.
  */
 export function getPositions(file: AbifFile): number[] | undefined {
-  const e = findEntry(file, 'PLOC', 2) ?? findEntry(file, 'PLOC', 1);
+  return getPositionsForVersion(file, 2) ?? getPositionsForVersion(file, 1);
+}
+
+/**
+ * Get PLOC<version> exactly as stored — no called/edited preference, unlike
+ * {@link getPositions}. See {@link getSequenceForVersion} for why this exists.
+ */
+export function getPositionsForVersion(file: AbifFile, version: number): number[] | undefined {
+  const e = findEntry(file, 'PLOC', version);
   if (!e) return undefined;
   if (e.elementSize !== 2) {
-    throw new Error(`PLOC: expected elementSize=2, got ${e.elementSize}`);
+    throw new Error(`PLOC${version}: expected elementSize=2, got ${e.elementSize}`);
   }
   const view = asDataView(e.payload);
   const out: number[] = new Array(e.elementCount);

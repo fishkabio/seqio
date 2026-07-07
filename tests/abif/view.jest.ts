@@ -13,18 +13,22 @@ import {
   dataChannelRole,
   getChannelMap,
   getConfidences,
+  getConfidencesForVersion,
   getDataChannel,
   getFwo,
   getPositions,
+  getPositionsForVersion,
   getReverseComplemented,
   getSamplingRate,
   getSequence,
+  getSequenceForVersion,
   hasData9To12Block,
 } from '../../src/abif/view';
 
 const RAW = path.join(__dirname, '..', 'fixtures', 'raw-no-basecalls.ab1');
 const ABF = path.join(__dirname, '..', 'fixtures', 'basecalled.ab1');
 const REVC = path.join(__dirname, '..', 'fixtures', 'revc-flag.ab1');
+const EDITED = path.join(__dirname, '..', 'fixtures', 'edited-differs-from-called.ab1');
 
 describe('abif-view', () => {
   it('reads DATA1..8 as int16 arrays on a raw file', () => {
@@ -74,6 +78,29 @@ describe('abif-view', () => {
       expect(p).toBeGreaterThanOrEqual(prev);
       prev = p;
     }
+  });
+
+  it('per-version getters read PBAS1/PCON1/PLOC1 independently of the called/edited preference', () => {
+    const f = readAbif(fs.readFileSync(ABF));
+    // basecalled.ab1 carries identical PBAS1/PBAS2 -- version 1 must still be reachable on its own.
+    expect(getSequenceForVersion(f, 1)).toBe(getSequence(f));
+    expect(getConfidencesForVersion(f, 1)).toEqual(getConfidences(f));
+    expect(getPositionsForVersion(f, 1)).toEqual(getPositions(f));
+    // A version that doesn't exist returns undefined, not a fallback to another version.
+    expect(getSequenceForVersion(f, 3)).toBeUndefined();
+    expect(getConfidencesForVersion(f, 3)).toBeUndefined();
+    expect(getPositionsForVersion(f, 3)).toBeUndefined();
+  });
+
+  it('per-version getters read edited and called independently when they genuinely differ', () => {
+    const f = readAbif(fs.readFileSync(EDITED));
+    const edited = getSequenceForVersion(f, 1);
+    const called = getSequenceForVersion(f, 2);
+    expect(edited).not.toBe(called);
+    expect(edited?.length).not.toBe(called?.length);
+    // The preferred getter (called over edited) must match version 2, not version 1.
+    expect(getSequence(f)).toBe(called);
+    expect(getPositions(f)).toEqual(getPositionsForVersion(f, 2));
   });
 
   it('round-trips PBAS2/PCON2/PLOC2 via setters and preserves other entries', () => {
