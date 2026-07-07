@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { readAbif } from '../../src/abif/raw';
+import { readAbif } from '../../src/abif/abif-format';
 import { getConfidences, getSequence } from '../../src/abif/view';
 import { formatFasta, formatFastq, formatQual, hasUsableQuality, MAX_PHRED } from '../../src/fastx';
 

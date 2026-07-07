@@ -19,12 +19,27 @@ CJS builds with type declarations.
 └── jest.config.js
 ```
 
-Layered design:
+Layered design (convention for every binary format — ABIF today, SCF later):
 
-- `src/abif/raw.ts` — low-level `readAbif` / `writeAbif`, lossless round-trip.
-- `src/abif/view.ts` — typed getters: `getDataChannel`, `getSequence`, ...
-- `src/abif/setters.ts` — mutation helpers for basecallers.
-- `src/abif/parser.ts` — high-level `parseAbif()` wrapper with metadata + decoded entries.
+- **Raw layer** — one `<format>-format.ts` per format (e.g. `src/abif/abif-format.ts`):
+  the byte↔struct codec (`read<Format>`/`write<Format>`), the lossless container
+  model, and generic entry primitives (`findEntry`/`upsertEntry`). Zero format-domain
+  semantics — it knows how the container is laid out on disk, not what any tag means.
+  - For ABIF specifically: `readAbif`→`writeAbif` round-trips byte-identical for any
+    plain (non-MacBinary) file when nothing is changed. A MacBinary-wrapped input
+    reads correctly but `writeAbif` always emits unwrapped plain ABIF — a deliberate
+    normalization (MacBinary is a pre-OSX transport artifact nothing today needs back),
+    not a fidelity gap.
+- **Domain layer** — everything else for that format, built only through the raw
+  layer's primitives (never touches bytes/offsets directly):
+  - `view.ts` — typed getters: `getDataChannel`, `getSequence`, ...
+  - `setters.ts` — mutation helpers for basecallers.
+  - `parser.ts` — high-level `parseAbif()` read-only convenience wrapper (metadata +
+    decoded entries) over `view.ts`.
+  - `<format>-op-<verb>.ts` — one file per task-specific operation (e.g. `abif-op-crop.ts`).
+
+Text formats with no container/offset model (FASTA/FASTQ/.qual: `src/fastx.ts`) have
+no raw layer — they're domain-layer-only, a single file.
 
 # Development tips
 

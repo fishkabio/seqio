@@ -62,7 +62,10 @@ export interface AbifEntry {
   /**
    * The directory fields exactly as they were on disk — present only when this entry was read from a
    * file (absent for entries synthesized by setters/writeAbif). Lets consumers inspect the real record
-   * without our reconciliation.
+   * without our reconciliation, and lets writeAbif() reuse this entry's original directory slot/offset
+   * verbatim on an unmodified round-trip. Mutate entries only through upsertEntry() — it clears this
+   * field, since a hand-edited entry (payload/elementType/elementSize/elementCount set directly) can no
+   * longer be reproduced from its stale on-disk shape.
    */
   raw?: AbifEntryRaw;
 }

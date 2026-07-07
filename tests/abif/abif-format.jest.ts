@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { findEntry, readAbif, upsertEntry, writeAbif } from '../../src/abif/abif-format';
 import { parseAbif } from '../../src/abif/parser';
-import { findEntry, readAbif, writeAbif } from '../../src/abif/raw';
 import { getConfidences, getDataChannel, getFwo, getSequence } from '../../src/abif/view';
 
 const RAW = path.join(__dirname, '..', 'fixtures', 'raw-no-basecalls.ab1');
@@ -349,6 +349,20 @@ describe('abif-raw', () => {
       expect(e.raw?.dataSize).toBe(-5); // raw field preserved verbatim
     });
 
+    it('normalizes (not corrupts) a negative dataSize on write, since it can never be verbatim-eligible', () => {
+      // A negative declared dataSize can never satisfy payload.byteLength === raw.dataSize (byteLength
+      // is never negative), so writeAbif() cannot reuse the original record — this is a deliberate,
+      // documented exception to the byte-exact round-trip guarantee (see writeAbif's doc comment):
+      // the payload/content still round-trips correctly, just not the original garbage dataSize field.
+      const f = readAbif(
+        oneEntry({ tag: 'USER', elementType: 2, elementSize: 1, elementCount: 1, dataSize: -5, inline: [65] }),
+      );
+      const reread = readAbif(writeAbif(f));
+      const e = findEntry(reread, 'USER', 1);
+      expect(Array.from(e?.payload ?? [])).toEqual([65]);
+      expect(e?.raw?.dataSize).toBe(1); // normalized to the real payload length, not left negative
+    });
+
     it('does not throw on numeric types whose payload is shorter than the element width', () => {
       // type 5/7 (4 bytes/elem) and 8 (8 bytes) with only 2 payload bytes → no RangeError.
       for (const elementType of [3, 4, 5, 7, 8]) {
@@ -430,6 +444,271 @@ describe('abif-raw', () => {
       expect(e.raw?.elementCount).toBe(-3); // raw numElements preserved verbatim
       expect(() => getDataChannel(f, 1)).not.toThrow(); // would be new Int16Array(-3) without the clamp
       expect(getDataChannel(f, 1)!.length).toBe(0);
+    });
+  });
+
+  describe('byte-exact round-trip (writeAbif)', () => {
+    const FIXTURES: Array<[string, string]> = [
+      ['basecalled.ab1', ABF],
+      ['raw-no-basecalls.ab1', RAW],
+      ['edited-differs-from-called.ab1', EDITED],
+      ['revc-flag.ab1', REVC],
+    ];
+
+    it.each(FIXTURES)('reproduces %s byte-for-byte when nothing is modified', (_name, file) => {
+      const original = new Uint8Array(fs.readFileSync(file));
+      const out = writeAbif(readAbif(original));
+      expect(out.byteLength).toBe(original.byteLength);
+      expect(Array.from(out)).toEqual(Array.from(original));
+    });
+
+    it('drops the MacBinary preamble but reproduces the plain ABIF payload byte-for-byte', () => {
+      const plain = new Uint8Array(fs.readFileSync(RAW));
+      const wrapped = new Uint8Array(128 + plain.byteLength);
+      wrapped.set(plain, 128);
+      const out = writeAbif(readAbif(wrapped));
+      expect(Array.from(out)).toEqual(Array.from(plain));
+    });
+
+    it('preserves a non-zero reserved header byte verbatim', () => {
+      const bytes = new Uint8Array(fs.readFileSync(ABF));
+      bytes[50] = 0xab; // inside the [34..127] reserved header region
+      const out = writeAbif(readAbif(bytes));
+      expect(Array.from(out)).toEqual(Array.from(bytes));
+    });
+
+    it('preserves non-zero stale bytes in an inline slot beyond dataSize verbatim', () => {
+      // A single USER entry: dataSize=2 (2 meaningful bytes) but the 4-byte inline slot carries
+      // 2 more non-zero "stale" bytes beyond it — bytes that no semantic field can recompute.
+      const dirAt = 128;
+      const buf = new Uint8Array(dirAt + 28);
+      const dv = new DataView(buf.buffer);
+      buf.set([0x41, 0x42, 0x49, 0x46], 0); // "ABIF"
+      dv.setInt16(4, 101, false);
+      buf.set([0x74, 0x64, 0x69, 0x72], 6); // "tdir"
+      dv.setInt32(10, 1, false);
+      dv.setInt16(14, 1023, false);
+      dv.setInt16(16, 28, false);
+      dv.setInt32(18, 1, false); // one entry
+      dv.setInt32(22, 28, false);
+      dv.setInt32(26, dirAt, false);
+      buf.set(
+        Array.from('USER', c => c.charCodeAt(0)),
+        dirAt,
+      );
+      dv.setInt32(dirAt + 4, 1, false);
+      dv.setInt16(dirAt + 8, 1024, false);
+      dv.setInt16(dirAt + 10, 1, false);
+      dv.setInt32(dirAt + 12, 1, false);
+      dv.setInt32(dirAt + 16, 2, false); // dataSize = 2
+      buf.set([65, 66, 0x99, 0xff], dirAt + 20); // 2 meaningful bytes + 2 non-zero stale bytes
+      expect(Array.from(writeAbif(readAbif(buf)))).toEqual(Array.from(buf));
+    });
+
+    it('keeps every other entry at its exact original offset after shrinking one entry', () => {
+      const original = new Uint8Array(fs.readFileSync(ABF));
+      const before = readAbif(original);
+      const machine = findEntry(before, 'MCHN', 1);
+      if (!machine?.raw || machine.raw.inline) throw new Error('fixture must carry an external MCHN1 entry');
+
+      const f = readAbif(original);
+      const pbas2 = findEntry(f, 'PBAS', 2);
+      if (!pbas2) throw new Error('fixture must carry PBAS2');
+      // Shrink PBAS2 in place, the same shape of edit a crop performs.
+      upsertEntry(f, 'PBAS', 2, pbas2.payload.subarray(0, 10), { elementType: 2, elementSize: 1, elementCount: 10 });
+
+      const out = writeAbif(f);
+      // MCHN1 never moved: same absolute offset, same bytes.
+      const outSlice = out.subarray(machine.raw.dataOffset, machine.raw.dataOffset + machine.raw.dataSize);
+      expect(Array.from(outSlice)).toEqual(Array.from(machine.payload));
+
+      const reread = readAbif(out);
+      expect(getSequence(reread)).toHaveLength(10);
+      const rereadMachine = findEntry(reread, 'MCHN', 1);
+      expect(rereadMachine?.raw?.dataOffset).toBe(machine.raw.dataOffset);
+    });
+
+    it('shortens the directory in place when an entry is dropped, leaving the rest untouched', () => {
+      const original = new Uint8Array(fs.readFileSync(ABF));
+      const before = readAbif(original);
+      const machine = findEntry(before, 'MCHN', 1);
+      if (!machine?.raw || machine.raw.inline) throw new Error('fixture must carry an external MCHN1 entry');
+
+      const f = readAbif(original);
+      const withoutData5 = { ...f, entries: f.entries.filter(e => !(e.tagName === 'DATA' && e.tagNumber === 5)) };
+      const out = writeAbif(withoutData5);
+      const reread = readAbif(out);
+
+      expect(reread.entries.length).toBe(f.entries.length - 1);
+      expect(findEntry(reread, 'DATA', 5)).toBeUndefined();
+      // MCHN1 (unrelated to the dropped entry) is still byte-identical at its original offset.
+      const outSlice = out.subarray(machine.raw.dataOffset, machine.raw.dataOffset + machine.raw.dataSize);
+      expect(Array.from(outSlice)).toEqual(Array.from(machine.payload));
+    });
+
+    it("appends a brand-new entry without disturbing any existing entry's payload bytes", () => {
+      // Growing past the original entry count relocates the directory itself (see writeAbif's doc
+      // comment), so unlike the shrink/drop cases above this does not keep a byte-identical prefix —
+      // only per-entry payload bytes are guaranteed untouched. Crop never adds entries; this exercises
+      // the general upsertEntry "new tag" path other domain-layer code (setters.ts) relies on.
+      const original = new Uint8Array(fs.readFileSync(RAW));
+      const before = readAbif(original);
+      const f = readAbif(original);
+      upsertEntry(f, 'PBAS', 2, new Uint8Array([65, 67, 71, 84]), { elementType: 2, elementSize: 1, elementCount: 4 });
+
+      const out = writeAbif(f);
+      expect(out.byteLength).toBeGreaterThan(original.byteLength);
+
+      const reread = readAbif(out);
+      expect(reread.entries.length).toBe(before.entries.length + 1);
+      for (const e of before.entries) {
+        const match = findEntry(reread, e.tagName, e.tagNumber);
+        expect(match).toBeDefined();
+        expect(Array.from(match?.payload ?? [])).toEqual(Array.from(e.payload));
+      }
+      expect(getSequence(reread)).toBe('ACGT');
+    });
+
+    it('does not leak the stale elementCount when a same-length edit changes elementSize', () => {
+      // A same-length upsertEntry (payload.byteLength coincidentally equal to the pre-edit
+      // raw.dataSize) must still be classified as "changed" -- otherwise the writer would combine
+      // the NEW elementSize with the OLD (now-mismatched) elementCount/dataSize from `raw`.
+      const original = new Uint8Array(fs.readFileSync(ABF));
+      const f = readAbif(original);
+      const ploc2 = findEntry(f, 'PLOC', 2);
+      if (!ploc2) throw new Error('fixture must carry PLOC2');
+      const byteLength = ploc2.payload.byteLength; // elementSize=2, count=byteLength/2 originally
+      upsertEntry(f, 'PLOC', 2, ploc2.payload, {
+        elementType: ploc2.elementType,
+        elementSize: 1,
+        elementCount: byteLength,
+      });
+
+      const out = writeAbif(f);
+      const reread = readAbif(out);
+      const after = findEntry(reread, 'PLOC', 2);
+      expect(after?.elementCount).toBe(byteLength); // not the stale, half-sized original count
+      expect(after?.payload.byteLength).toBe(byteLength);
+    });
+
+    it('round-trips a synthetic file with a desynced tdir.dataSize (smaller than the physical directory) byte-for-byte', () => {
+      // Mirrors the read-only "desynced tdir.dataSize" fixture above, but through a full
+      // read -> write round trip: the physical directory (2*28=56B) is bigger than the
+      // declared (and byte-exact-reproduced) dataSize field (28B).
+      const N = 2;
+      const dirAt = 128;
+      const buf = new Uint8Array(dirAt + N * 28);
+      const dv = new DataView(buf.buffer);
+      buf.set([0x41, 0x42, 0x49, 0x46], 0); // "ABIF"
+      dv.setInt16(4, 101, false);
+      buf.set([0x74, 0x64, 0x69, 0x72], 6); // "tdir"
+      dv.setInt32(10, 1, false);
+      dv.setInt16(14, 1023, false);
+      dv.setInt16(16, 28, false);
+      dv.setInt32(18, N, false); // numElements = 2 (authoritative)
+      dv.setInt32(22, 28, false); // dataSize = 28 (desynced: declares room for only 1)
+      dv.setInt32(26, dirAt, false);
+      for (let i = 0; i < N; i++) {
+        const at = dirAt + i * 28;
+        buf.set(
+          Array.from('USER', c => c.charCodeAt(0)),
+          at,
+        );
+        dv.setInt32(at + 4, i + 1, false);
+        dv.setInt16(at + 8, 1024, false);
+        dv.setInt16(at + 10, 1, false);
+        dv.setInt32(at + 12, 1, false);
+        dv.setInt32(at + 16, 1, false);
+        buf[at + 20] = 0x41 + i;
+      }
+      const out = writeAbif(readAbif(buf));
+      expect(Array.from(out)).toEqual(Array.from(buf));
+    });
+
+    it('flips an entry from external to inline after a shrinking edit', () => {
+      const original = new Uint8Array(fs.readFileSync(ABF));
+      const f = readAbif(original);
+      const before = findEntry(f, 'PBAS', 2);
+      if (!before?.raw || before.raw.inline) throw new Error('fixture must carry an external PBAS2 entry');
+      upsertEntry(f, 'PBAS', 2, new Uint8Array([65, 67]), { elementType: 2, elementSize: 1, elementCount: 2 });
+
+      const out = writeAbif(f);
+      const reread = readAbif(out);
+      const after = findEntry(reread, 'PBAS', 2);
+      expect(after?.raw?.inline).toBe(true);
+      expect(getSequence(reread)).toBe('AC');
+    });
+
+    it('flips an entry from inline to external after a growing edit', () => {
+      const original = new Uint8Array(fs.readFileSync(RAW));
+      const f = readAbif(original);
+      upsertEntry(f, 'PBAS', 2, new Uint8Array([65, 67]), { elementType: 2, elementSize: 1, elementCount: 2 });
+      const afterFirstWrite = readAbif(writeAbif(f));
+      expect(findEntry(afterFirstWrite, 'PBAS', 2)?.raw?.inline).toBe(true);
+
+      upsertEntry(afterFirstWrite, 'PBAS', 2, new Uint8Array([65, 67, 71, 84, 65, 67]), {
+        elementType: 2,
+        elementSize: 1,
+        elementCount: 6,
+      });
+      const reread = readAbif(writeAbif(afterFirstWrite));
+      expect(findEntry(reread, 'PBAS', 2)?.raw?.inline).toBe(false);
+      expect(getSequence(reread)).toBe('ACGTAC');
+    });
+
+    it('grows the directory correctly when multiple entries are added at once', () => {
+      const original = new Uint8Array(fs.readFileSync(RAW));
+      const before = readAbif(original);
+      const f = readAbif(original);
+      upsertEntry(f, 'PBAS', 2, new Uint8Array([65, 67, 71, 84, 65]), {
+        elementType: 2,
+        elementSize: 1,
+        elementCount: 5,
+      });
+      upsertEntry(f, 'PCON', 2, new Uint8Array([40, 40, 40, 40, 40]), {
+        elementType: 2,
+        elementSize: 1,
+        elementCount: 5,
+      });
+      upsertEntry(f, 'PLOC', 2, new Uint8Array(10), { elementType: 4, elementSize: 2, elementCount: 5 });
+
+      const out = writeAbif(f);
+      const reread = readAbif(out);
+      expect(reread.entries.length).toBe(before.entries.length + 3);
+      for (const e of before.entries) {
+        const match = findEntry(reread, e.tagName, e.tagNumber);
+        expect(match).toBeDefined();
+        expect(Array.from(match?.payload ?? [])).toEqual(Array.from(e.payload));
+      }
+      expect(getSequence(reread)).toBe('ACGTA');
+    });
+
+    it('writes back unreferenced byte ranges verbatim even after mutating an unrelated entry', () => {
+      const original = new Uint8Array(fs.readFileSync(ABF));
+      const before = readAbif(original);
+      expect(before.unreferencedRanges.length).toBeGreaterThan(0);
+
+      const f = readAbif(original);
+      const pbas2 = findEntry(f, 'PBAS', 2);
+      if (!pbas2) throw new Error('fixture must carry PBAS2');
+      upsertEntry(f, 'PBAS', 2, pbas2.payload.subarray(0, 10), { elementType: 2, elementSize: 1, elementCount: 10 });
+
+      // Shrinking PBAS2 abandons its old external span, which legitimately becomes an *additional*
+      // orphan range on re-read — the guarantee under test is that every PRE-EXISTING orphan range
+      // survives verbatim, not that the mutation can't introduce a new one of its own.
+      const out = writeAbif(f);
+      // Check the output bytes directly, before re-reading — re-read gaps could in principle merge
+      // adjacent orphan spans into a differently-offset range, which would mask a placement bug here.
+      for (const range of before.unreferencedRanges) {
+        const slice = out.subarray(range.offset, range.offset + range.bytes.length);
+        expect(Array.from(slice)).toEqual(Array.from(range.bytes));
+      }
+      const reread = readAbif(out);
+      for (const range of before.unreferencedRanges) {
+        const match = reread.unreferencedRanges.find(r => r.offset === range.offset);
+        expect(match).toBeDefined();
+        expect(Array.from(match?.bytes ?? [])).toEqual(Array.from(range.bytes));
+      }
     });
   });
 

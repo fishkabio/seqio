@@ -10,8 +10,8 @@
  * setters from ./setters which operate directly on the raw AbifFile.
  */
 
+import { readAbif } from './abif-format';
 import { asciiString, asDataView, subview } from './bytes';
-import { readAbif } from './raw';
 import {
   AbifBaseCalls,
   AbifBaseCallVariant,

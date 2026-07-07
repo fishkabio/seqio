@@ -3,8 +3,8 @@
  * are present. Used by basecallers to author ABIF output.
  */
 
+import { findEntry, upsertEntry } from './abif-format';
 import { asciiBytes, asDataView } from './bytes';
-import { findEntry, upsertEntry } from './raw';
 import { AbifFile } from './types';
 import { hasData9To12Block } from './view';
 

@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { readAbif, upsertEntry, writeAbif } from '../../src/abif/raw';
+import { readAbif, upsertEntry, writeAbif } from '../../src/abif/abif-format';
 import {
   averagePeakSpacing,
   ensureRawDataChannels,

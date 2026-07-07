@@ -5,8 +5,8 @@
  * mutation helpers (setSequence, setConfidences, ...) see ./setters.
  */
 
+import { findEntry } from './abif-format';
 import { asciiString, asDataView } from './bytes';
-import { findEntry } from './raw';
 import { AbifDataChannelRole, AbifEntry, AbifFile } from './types';
 
 /** Get DATA<n> as a signed-int16 array, or undefined. */

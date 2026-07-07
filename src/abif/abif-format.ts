@@ -1,9 +1,10 @@
 /**
- * Low-level ABIF reader/writer.
- *
- * Round-trip without loss: every directory entry (including unknown vendor
- * tags) is preserved as a raw payload (Uint8Array). The high-level layer
- * (view.ts, parser.ts) provides typed access on top of this.
+ * Raw layer: the ABIF byte<->struct codec. Every directory entry (including unknown
+ * vendor tags) is preserved as a raw payload (Uint8Array), and writeAbif() reproduces
+ * the original bytes exactly for an unmodified round-trip (see its own doc comment).
+ * The domain layer (view.ts, setters.ts, parser.ts, abif-op-*.ts) provides typed,
+ * format-aware access on top of this — this file knows nothing about what any tag
+ * means.
  *
  * ABIF file layout:
  *   [0..3]      "ABIF" magic
@@ -33,7 +34,7 @@
  */
 
 import { asciiBytes, asciiString, asDataView, subview, tagNameFromInt32 } from './bytes';
-import { AbifByteRange, AbifDirectory, AbifEntry, AbifFile } from './types';
+import { AbifByteRange, AbifDirectory, AbifEntry, AbifEntryRaw, AbifFile } from './types';
 
 export const HEADER_SIZE = 128;
 export const ENTRY_SIZE = 28;
@@ -269,111 +270,178 @@ function decodeEntry(bytes: Uint8Array, view: DataView, off: number, base: numbe
 /**
  * Serialize an AbifFile back to a Uint8Array.
  *
- * Layout produced: header (128 B) + directory (N*28 B) + payload block.
- * External payloads are packed tightly in entry order. Payloads <= 4 bytes are
- * stored inline inside their directory entry.
+ * Byte-exact on an unmodified round-trip for well-formed records and the tolerated
+ * count/dataSize desyncs readAbif() accepts: readAbif() followed right back by
+ * writeAbif(), with nothing touched in between, reproduces the original bytes
+ * exactly (a MacBinary-wrapped input round-trips its ABIF payload byte-exact, but
+ * the preamble itself is never re-added — see the AGENTS.md note on why). The one
+ * exception is a genuinely invalid negative `dataSize`/`numElements` field (readAbif
+ * tolerates these defensively, falling back to a computed size, but never treats them
+ * as verbatim-eligible on write — see the byteLength check below) — such an entry
+ * round-trips meaning-lossless (correct payload/content) but its declared dataSize
+ * field gets normalized to the real payload length rather than reproducing the
+ * original garbage value.
  *
- * Meaning-lossless, not byte-exact: the payload bytes, tag fields and dataSize
- * (= payload length) round-trip, but physical layout does not — payloads are
- * repacked, directory/header padding and any MacBinary preamble are dropped. A
- * byte-exact layout-preserving mode is a possible future opt-in.
+ * This works by keeping every entry whose payload size hasn't changed since it was
+ * read (`entry.raw` present — upsertEntry() clears it on any mutation — and
+ * `payload.byteLength === raw.dataSize`) at its exact original directory slot and
+ * file offset, writing the *original* on-disk numElements/dataSize/offset-or-inline-
+ * padding instead of the reconciled/current ones. A new or resized entry is appended
+ * past the highest byte offset still known to hold preserved content (every verbatim
+ * entry's span, the directory, and any unreferenced range); only its own directory
+ * record changes, so every other entry's bytes stay untouched. A resized/removed
+ * entry's *old* span is not itself reserved — nothing points at it anymore, so it is
+ * free to be reused by whatever gets appended next; the output is not padded out to
+ * the original file's true end.
+ *
+ * The directory is kept at its original file offset as long as the entry count
+ * didn't grow (removing entries just shortens it in place; the original directory
+ * padding is only reused when the count is exactly unchanged, since a shorter
+ * directory can't reuse padding sized for more entries). Only a growing entry count
+ * relocates the whole directory to freshly appended space.
  */
 export function writeAbif(file: AbifFile): Uint8Array {
+  const base = file.macBinaryOffset;
   const numEntries = file.entries.length;
-  const dirOffset = HEADER_SIZE;
-  const dirSize = numEntries * ENTRY_SIZE;
+  const originalCount = file.tdir.entryCount;
 
-  // Compute external payload offsets. The payload bytes are authoritative: dataSize
-  // written = payload.byteLength (may differ from count*size for user/opaque types).
-  let payloadCursor = dirOffset + dirSize;
-  const externalOffsets: number[] = new Array(numEntries);
-  for (let i = 0; i < numEntries; i++) {
-    const dataSize = file.entries[i].payload.byteLength;
-    if (dataSize > 4) {
-      externalOffsets[i] = payloadCursor;
-      payloadCursor += dataSize;
-    } else {
-      externalOffsets[i] = -1; // inline
-    }
-  }
-
-  const totalSize = payloadCursor;
-  const out = new Uint8Array(totalSize);
-  const outView = asDataView(out);
-
-  // Header: "ABIF" + version (int16 BE) + tdir entry + zeros.
-  out.set(asciiBytes('ABIF'), 0);
-  outView.setInt16(4, file.version, false);
-  // The tdir entry's dataOffset is the directory offset (explicit, not from
-  // the AbifEntry payload — the tdir is structural).
-  writeEntry(
-    {
-      tagName: 'tdir',
-      tagNumber: 1,
-      elementType: 1023,
-      elementSize: ENTRY_SIZE,
-      elementCount: numEntries,
-      payload: new Uint8Array(0),
-      dataHandle: 0,
-    },
-    out,
-    outView,
-    6,
-    /* externalOffset */ -1,
-    /* externalDataSize */ dirSize,
-    /* explicitDirOffset */ dirOffset,
+  // An entry is verbatim-eligible when its payload is exactly the size it was read
+  // at — the only case where its original directory record/offset can be reused.
+  const verbatimRaw: Array<AbifEntryRaw | undefined> = file.entries.map(e =>
+    e.raw && e.payload.byteLength === e.raw.dataSize ? e.raw : undefined,
   );
 
-  // Directory entries.
-  for (let i = 0; i < numEntries; i++) {
-    const e = file.entries[i];
-    writeEntry(e, out, outView, dirOffset + i * ENTRY_SIZE, externalOffsets[i]);
+  // Anchor: the highest byte offset known to belong to the original (unwrapped)
+  // file — header, directory span, every verbatim entry's external payload, and any
+  // orphan byte range. Fresh content is appended after this, so an unmodified
+  // round-trip never appends anything and the output ends exactly here.
+  let anchor = HEADER_SIZE;
+  // A malformed original can declare tdir.dataSize smaller than the entries actually occupy
+  // (readAbif trusts numElements over dataSize — see the "desynced tdir.dataSize" test); the
+  // *physical* directory span must still be protected even though the reused dataSize field
+  // below intentionally reproduces the original (desynced) declared value byte-for-byte.
+  anchor = Math.max(anchor, file.tdir.dataOffset + Math.max(file.tdir.dataSize, originalCount * ENTRY_SIZE));
+  for (const raw of verbatimRaw) {
+    if (raw && !raw.inline) anchor = Math.max(anchor, raw.dataOffset + raw.dataSize);
+  }
+  for (const r of file.unreferencedRanges) {
+    anchor = Math.max(anchor, r.offset - base + r.bytes.length);
   }
 
-  // Payload block.
+  // Directory placement: reuse the original slot unless the entry count grew past it.
+  const dirGrew = numEntries > originalCount;
+  let cursor = anchor;
+  const dirOffset = dirGrew ? cursor : file.tdir.dataOffset;
+  const dirDataSize = numEntries === originalCount ? file.tdir.dataSize : numEntries * ENTRY_SIZE;
+  if (dirGrew) cursor += dirDataSize;
+
+  // Fresh (non-verbatim) external payloads are appended past the anchor, in entry order.
+  const freshOffsets: number[] = new Array(numEntries);
   for (let i = 0; i < numEntries; i++) {
-    const off = externalOffsets[i];
-    if (off >= 0) {
-      out.set(file.entries[i].payload, off);
+    const size = file.entries[i].payload.byteLength;
+    if (verbatimRaw[i] || size <= 4) {
+      freshOffsets[i] = -1; // reused verbatim placement, or inline — no fresh external slot
+      continue;
     }
+    freshOffsets[i] = cursor;
+    cursor += size;
+  }
+
+  const out = new Uint8Array(cursor);
+  const outView = asDataView(out);
+
+  // Header: "ABIF" + version (int16 BE) + tdir entry (below) + reserved bytes verbatim.
+  out.set(asciiBytes('ABIF'), 0);
+  outView.setInt16(4, file.version, false);
+  out.set(file.headerReserved, 6 + ENTRY_SIZE);
+  writeDirRecord(out, outView, 6, {
+    tagName: 'tdir',
+    tagNumber: file.tdir.tagNumber,
+    elementType: file.tdir.elementType,
+    elementSize: file.tdir.entrySize,
+    elementCount: numEntries,
+    dataSize: dirDataSize,
+    dataHandle: file.tdir.dataHandle,
+    offsetSlot: { kind: 'external', value: dirOffset },
+  });
+
+  // Directory padding only carries over when the entry count is exactly unchanged.
+  if (numEntries === originalCount && file.tdir.paddingBytes.length > 0) {
+    out.set(file.tdir.paddingBytes, dirOffset + numEntries * ENTRY_SIZE);
+  }
+
+  for (let i = 0; i < numEntries; i++) {
+    const e = file.entries[i];
+    const raw = verbatimRaw[i];
+    const off = dirOffset + i * ENTRY_SIZE;
+    const dataSize = e.payload.byteLength;
+    writeDirRecord(out, outView, off, {
+      tagName: e.tagName,
+      tagNumber: e.tagNumber,
+      elementType: e.elementType,
+      elementSize: e.elementSize,
+      elementCount: raw ? raw.elementCount : e.elementCount,
+      dataSize: raw ? raw.dataSize : dataSize,
+      dataHandle: e.dataHandle,
+      offsetSlot:
+        dataSize <= 4
+          ? { kind: 'inline', payload: e.payload, dataSize, staleTail: raw?.dataOffsetBytes }
+          : { kind: 'external', value: raw ? raw.dataOffset : freshOffsets[i] },
+    });
+    if (dataSize > 4) {
+      out.set(e.payload, raw ? raw.dataOffset : freshOffsets[i]);
+    }
+  }
+
+  for (const r of file.unreferencedRanges) {
+    out.set(r.bytes, r.offset - base);
   }
 
   return out;
 }
 
-function writeEntry(
-  e: AbifEntry,
+type OffsetSlot =
+  | { kind: 'external'; value: number }
+  | { kind: 'inline'; payload: Uint8Array; dataSize: number; staleTail?: Uint8Array };
+
+function writeDirRecord(
   out: Uint8Array,
   outView: DataView,
   off: number,
-  externalOffset: number,
-  externalDataSize?: number,
-  explicitDirOffset?: number,
+  rec: {
+    tagName: string;
+    tagNumber: number;
+    elementType: number;
+    elementSize: number;
+    elementCount: number;
+    dataSize: number;
+    dataHandle: number;
+    offsetSlot: OffsetSlot;
+  },
 ): void {
-  if (e.tagName.length !== 4) {
-    throw new Error(`tagName must be 4 chars: "${e.tagName}"`);
+  if (rec.tagName.length !== 4) {
+    throw new Error(`tagName must be 4 chars: "${rec.tagName}"`);
   }
-  out.set(asciiBytes(e.tagName), off);
-  outView.setInt32(off + 4, e.tagNumber, false);
-  outView.setInt16(off + 8, e.elementType, false);
-  outView.setInt16(off + 10, e.elementSize, false);
-  outView.setInt32(off + 12, e.elementCount, false);
-  const dataSize = externalDataSize ?? e.payload.byteLength;
-  outView.setInt32(off + 16, dataSize, false);
-
-  if (explicitDirOffset !== undefined) {
-    outView.setInt32(off + 20, explicitDirOffset, false);
-  } else if (dataSize <= 4) {
-    // Inline: clear 4 bytes then place payload at off+20.
-    out.fill(0, off + 20, off + 24);
-    out.set(e.payload.subarray(0, dataSize), off + 20);
+  out.set(asciiBytes(rec.tagName), off);
+  outView.setInt32(off + 4, rec.tagNumber, false);
+  outView.setInt16(off + 8, rec.elementType, false);
+  outView.setInt16(off + 10, rec.elementSize, false);
+  outView.setInt32(off + 12, rec.elementCount, false);
+  outView.setInt32(off + 16, rec.dataSize, false);
+  if (rec.offsetSlot.kind === 'external') {
+    outView.setInt32(off + 20, rec.offsetSlot.value, false);
   } else {
-    if (externalOffset < 0) {
-      throw new Error(`External payload requires offset for ${e.tagName}${e.tagNumber}`);
+    // Inline: clear 4 bytes, place the payload, then restore any stale tail byte(s)
+    // beyond dataSize from the original slot — a byte-exact round-trip needs them,
+    // since they're not derivable from any semantic field.
+    const { payload, dataSize, staleTail } = rec.offsetSlot;
+    out.fill(0, off + 20, off + 24);
+    out.set(payload.subarray(0, dataSize), off + 20);
+    if (staleTail && dataSize < 4) {
+      out.set(staleTail.subarray(dataSize, 4), off + 20 + dataSize);
     }
-    outView.setInt32(off + 20, externalOffset, false);
   }
-  outView.setInt32(off + 24, e.dataHandle, false);
+  outView.setInt32(off + 24, rec.dataHandle, false);
 }
 
 // =====================================================================
@@ -393,6 +461,11 @@ export function findEntries(file: AbifFile, name: string): AbifEntry[] {
 /**
  * Replace the payload of an existing entry, or append a new one.
  * elementType/elementSize/elementCount must be supplied for new entries.
+ *
+ * This is the required way to mutate an entry read from a file — it clears `.raw`
+ * on replacement so writeAbif() never reuses a now-stale on-disk shape. Setting
+ * `entry.payload`/`elementType`/`elementSize`/`elementCount` directly instead
+ * leaves `.raw` behind and can corrupt the written directory record.
  */
 export function upsertEntry(
   file: AbifFile,
@@ -410,6 +483,10 @@ export function upsertEntry(
     existing.elementSize = defaults.elementSize;
     existing.elementCount = defaults.elementCount;
     existing.payload = payload;
+    // `raw` describes the entry's shape as read from disk; once mutated it no longer applies —
+    // clearing it forces writeAbif() to place this entry fresh rather than reuse a stale record
+    // (e.g. a same-length content edit would otherwise silently keep the old elementCount/dataSize).
+    existing.raw = undefined;
   } else {
     file.entries.push({
       tagName: name,
