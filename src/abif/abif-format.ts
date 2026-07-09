@@ -458,9 +458,35 @@ export function findEntries(file: AbifFile, name: string): AbifEntry[] {
   return file.entries.filter(e => e.tagName === name);
 }
 
+/* Compare two directory records by ABIF directory order: tag name ascending
+ * (ASCII bytes), then tag number ascending. */
+function compareEntries(a: AbifEntry, b: AbifEntry): number {
+  if (a.tagName !== b.tagName) return a.tagName < b.tagName ? -1 : 1;
+  return a.tagNumber - b.tagNumber;
+}
+
 /**
- * Replace the payload of an existing entry, or append a new one.
- * elementType/elementSize/elementCount must be supplied for new entries.
+ * Insert a new entry at the slot that keeps the directory sorted by
+ * (tagName, tagNumber) — the order genuine ABI instruments emit and the ABIF
+ * spec prescribes. Readers that binary-search the directory (e.g. Chromas)
+ * silently miss a tag appended out of order — a re-basecalled file loses its
+ * quality bars because PCON2 is not found. Existing entries are never reordered,
+ * so an unmodified file still round-trips byte-exact; only the freshly added tag
+ * lands in its sorted place.
+ *
+ * Prefer {@link upsertEntry}; use this directly only to add an entry whose
+ * payload intentionally desyncs from `elementCount * elementSize` (e.g. copying
+ * a tolerated malformed record verbatim), which upsertEntry rejects.
+ */
+export function insertEntrySorted(entries: AbifEntry[], entry: AbifEntry): void {
+  const at = entries.findIndex(e => compareEntries(e, entry) > 0);
+  entries.splice(at < 0 ? entries.length : at, 0, entry);
+}
+
+/**
+ * Replace the payload of an existing entry, or insert a new one in sorted
+ * directory order. elementType/elementSize/elementCount must be supplied for
+ * new entries.
  *
  * This is the required way to mutate an entry read from a file — it clears `.raw`
  * on replacement so writeAbif() never reuses a now-stale on-disk shape. Setting
@@ -488,7 +514,7 @@ export function upsertEntry(
     // (e.g. a same-length content edit would otherwise silently keep the old elementCount/dataSize).
     existing.raw = undefined;
   } else {
-    file.entries.push({
+    insertEntrySorted(file.entries, {
       tagName: name,
       tagNumber: number,
       elementType: defaults.elementType,

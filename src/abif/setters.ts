@@ -3,7 +3,7 @@
  * are present. Used by basecallers to author ABIF output.
  */
 
-import { findEntry, upsertEntry } from './abif-format';
+import { findEntry, insertEntrySorted, upsertEntry } from './abif-format';
 import { asciiBytes, asDataView } from './bytes';
 import { AbifFile } from './types';
 import { hasData9To12Block } from './view';
@@ -106,7 +106,10 @@ export function ensureRawDataChannels(file: AbifFile): void {
     if (!src) continue;
     const target = 8 + i;
     if (findEntry(file, 'DATA', target)) continue;
-    file.entries.push({
+    // Copy DATA1..4's payload bytes + reconciled shape (dataHandle reset to 0),
+    // preserving any tolerated payload/count desync that upsertEntry would reject,
+    // and place it in sorted directory order.
+    insertEntrySorted(file.entries, {
       tagName: 'DATA',
       tagNumber: target,
       elementType: src.elementType,

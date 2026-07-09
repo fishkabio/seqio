@@ -569,6 +569,23 @@ describe('abif-raw', () => {
       expect(getSequence(reread)).toBe('ACGT');
     });
 
+    it('inserts a brand-new tag in sorted directory order, not at the end', () => {
+      // The ABIF directory must stay sorted by (tagName, tagNumber): readers that
+      // binary-search it (e.g. Chromas) silently miss a tag appended out of order.
+      // PCON sorts before PLOC/SPAC and well before the DATA9..12 a re-basecall adds,
+      // so a raw fixture (no PCON2) is the discriminating case.
+      const f = readAbif(fs.readFileSync(RAW));
+      expect(findEntry(f, 'PCON', 2)).toBeUndefined();
+      upsertEntry(f, 'PCON', 2, new Uint8Array([30, 30, 30, 30]), {
+        elementType: 2,
+        elementSize: 1,
+        elementCount: 4,
+      });
+
+      const keys = readAbif(writeAbif(f)).entries.map(e => `${e.tagName}\t${String(e.tagNumber).padStart(10, '0')}`);
+      expect(keys).toEqual([...keys].sort());
+    });
+
     it('does not leak the stale elementCount when a same-length edit changes elementSize', () => {
       // A same-length upsertEntry (payload.byteLength coincidentally equal to the pre-edit
       // raw.dataSize) must still be classified as "changed" -- otherwise the writer would combine
