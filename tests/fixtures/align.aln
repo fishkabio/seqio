@@ -1,0 +1,9 @@
+CLUSTAL W (1.83) multiple sequence alignment
+
+seq1            ACGT-ACGTAC
+seq2            ACGTAACGTAC
+                **** ******
+
+seq1            GTACGT
+seq2            GTACGT
+                ******

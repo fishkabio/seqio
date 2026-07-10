@@ -1,0 +1,11 @@
+!!NA_MULTIPLE_ALIGNMENT 1.0
+
+  align.msf  MSF: 9  Type: N  Check: 0  ..
+
+ Name: seq1  Len: 9  Check: 0  Weight: 1.00
+ Name: seq2  Len: 9  Check: 0  Weight: 1.00
+
+//
+
+seq1  ACGT .ACGT
+seq2  ACGTA ACGT

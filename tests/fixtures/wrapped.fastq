@@ -1,0 +1,10 @@
+@readA multi-line
+ACGT
+ACGT
++
+@@@@
+IIII
+@readB
+TT
++
+!!

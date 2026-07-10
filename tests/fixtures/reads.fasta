@@ -1,0 +1,7 @@
+; example FASTA - two reads
+>read1 sample alpha
+ACGTACGTACGTACGTACGT
+ACGTACGTAC
+
+>read2 sample beta | len=12
+acgtACGT--NN

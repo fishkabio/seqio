@@ -1,0 +1,22 @@
+LOCUS       TEST001                40 bp    DNA     linear   SYN 01-JAN-2020
+DEFINITION  Synthetic test construct with a
+            multi-line definition.
+ACCESSION   TEST001
+VERSION     TEST001.1
+KEYWORDS    .
+SOURCE      synthetic construct
+  ORGANISM  synthetic construct
+FEATURES             Location/Qualifiers
+     source          1..40
+                     /organism="synthetic construct"
+     CDS             1..30
+                     /translation="MKV"
+ORIGIN
+        1 atgaaagttt tacgtgatcc ggttgcaacc gatccggatc
+//
+LOCUS       TEST002                12 bp    DNA     linear   SYN 01-JAN-2020
+DEFINITION  Second record.
+VERSION     TEST002.2
+ORIGIN
+        1 acgtacgtac gt
+//

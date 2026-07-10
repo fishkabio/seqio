@@ -1,0 +1,17 @@
+ID   X56734; SV 1; linear; mRNA; STD; PLN; 40 BP.
+XX
+AC   X56734; S46826;
+XX
+DE   Trifolium repens mRNA for
+DE   non-cyanogenic beta-glucosidase
+XX
+SQ   Sequence 40 BP; 12 A; 8 C; 10 G; 10 T; 0 other;
+     aaacaaacca aatatggatt ttattgtagc catatttgct        40
+//
+ID   AB000263; SV 1; linear; mRNA; STD; PRI; 12 BP.
+XX
+DE   Homo sapiens test.
+XX
+SQ   Sequence 12 BP;
+     acgtacgtac gt        12
+//

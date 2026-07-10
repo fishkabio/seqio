@@ -1,9 +1,9 @@
 # AGENTS.md
 
 `@fishka/seqio` is a TypeScript library that parses and writes bioinformatics
-sequencing file formats. ABIF (`.ab1` / `.abi`) and FASTA/FASTQ/.qual text
-writers are implemented today; SCF and FASTA/FASTQ reading are planned. The
-library is browser- and Node-compatible (uses
+sequencing file formats. ABIF (`.ab1` / `.abi`) reading/writing and FASTA/FASTQ/.qual
+reading and text writers are implemented today, plus content-based format detection
+(`detectFormat`); SCF is planned. The library is browser- and Node-compatible (uses
 `Uint8Array` + `DataView`, no Node `Buffer` dependency) and ships dual ESM +
 CJS builds with type declarations.
 
@@ -11,7 +11,8 @@ CJS builds with type declarations.
 
 ```
 ├── src/abif/           ABIF reader/writer + typed view + high-level parser
-├── src/fastx.ts        FASTA / FASTQ / .qual text writers (Phred+33)
+├── src/fastx/          FASTA / FASTQ / .qual reader + text writers (Phred+33)
+├── src/detect.ts       Content-based file-format detection (detectFormat)
 ├── tests/              Jest unit tests + .ab1 fixtures
 ├── dist/               Build output (ESM + CJS), generated, gitignored
 ├── index.ts            Root re-export of src/
@@ -38,8 +39,18 @@ Layered design (convention for every binary format — ABIF today, SCF later):
     decoded entries) over `view.ts`.
   - `<format>-op-<verb>.ts` — one file per task-specific operation (e.g. `abif-op-crop.ts`).
 
-Text formats with no container/offset model (FASTA/FASTQ/.qual: `src/fastx.ts`) have
-no raw layer — they're domain-layer-only, a single file.
+Text formats with no on-disk container/offset model (FASTA/FASTQ/.qual: `src/fastx/`)
+have no separate raw layer, but still follow the `<family>-format.ts` codec naming:
+`src/fastx/fastx-format.ts` holds both the readers (`parseFasta`/`parseFastq`) and the
+writers (`formatFasta`/`formatFastq`/`formatQual`), with record types in
+`src/fastx/types.ts`. Parsing keeps the **data only** (residues, per-base Phred); it does
+not preserve line wrapping or newline style — cosmetic formatting the writers re-impose,
+which may become optional metadata later.
+
+Format detection (`src/detect.ts`, `detectFormat`) is cross-format and content-based: it
+sniffs the bytes (ABIF magic at offset 0 or 128, `.scf` magic, else the first
+non-whitespace byte past any UTF-8 BOM — `>` or a legacy `;` comment → FASTA, `@` →
+FASTQ), never the file extension.
 
 # Development tips
 
@@ -53,6 +64,20 @@ no raw layer — they're domain-layer-only, a single file.
 
 # Coding rules
 
+- **Be liberal in what you accept — never refuse a file over a minor spec deviation.**
+  Parsers must not throw on messy-but-recoverable real-world input (blank lines, mixed
+  newline styles, stray leading bytes, a truncated final record, wrapped lines, a
+  quality run that is short/long or has an out-of-range byte). Recover to the most
+  reasonable interpretation and, above all, preserve the payload the user came for (the
+  sequence). Refusing to open the user's file is a worse outcome than a best-effort
+  parse. Reserve hard failure for input that is genuinely not the format at all. Follow
+  the spec on the details that change the _data_ (id/description split, Phred+33 range,
+  length-terminated FASTQ quality), stay lenient on the details that are mere _cosmetics_.
+- **Multi-record by default.** Any format that can hold more than one record in a single
+  file — FASTA, FASTQ, GenBank/GenPept, EMBL, Swiss-Prot, the alignment formats, … — must
+  return **every** record, never just the first. Readers return an array and iterate to EOF;
+  a record boundary that is malformed (missing `//`, a truncated final record) still yields
+  each record it can (see the leniency rule). Always cover the multi-record case in tests.
 - Never commit or push the code.
 - Never write tests that blindly match the code they test — re-check that the
   tested code is correct first. The point of a test is to pin behavior the

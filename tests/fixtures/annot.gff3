@@ -1,0 +1,7 @@
+##gff-version 3
+##sequence-region chr1 1 20
+chr1	.	gene	1	20	.	+	.	ID=gene1;Name=test
+chr1	.	CDS	1	18	.	+	0	ID=cds1;Parent=gene1
+##FASTA
+>chr1 test chromosome
+ACGTACGTACGTACGTACGT
