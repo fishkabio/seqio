@@ -2,7 +2,7 @@
  * Multiple-sequence-alignment readers — one aligned row = one record.
  *
  * Covers the common alignment formats: Clustal (`.aln`), Stockholm (`.sto`/`.stk`),
- * PHYLIP (`.phy`), NEXUS (`.nex`) and GCG/MSF (`.msf`). Each returns the alignment's rows
+ * PHYLIP (`.phy`), NEXUS (`.nex`), GCG/MSF (`.msf`) and MEGA (`.meg`). Each returns the alignment's rows
  * as {@link SeqRecord}s: `id` = the taxon/sequence name, `sequence` = that row **with its
  * gap characters preserved** (an aligned row is data; de-gapping is a caller's choice).
  * Only line spacing and wrap are removed. No description field — these formats don't carry
@@ -177,6 +177,68 @@ export function parseMsf(input: string | Uint8Array): SeqRecord[] {
     // residue field is guarded.)
     if (/\d/.test(residues)) continue;
     aln.add(m[1], residues);
+  }
+  return aln.toRecords();
+}
+
+/**
+ * Read a MEGA (`.meg`) alignment / sequence set.
+ *
+ * MEGA files open with `#mega` (or `#MEGA`), carry `!Command …;` directives (Title/Format/…), then
+ * the sequences as `#Name residues` rows — interleaved (each name repeats per block) or with the
+ * residues wrapped onto following lines. Rows are accumulated by name. Gap `-` and the identity
+ * match-char `.` are kept verbatim (de-gapping is the caller's choice; note `.` means "same as the
+ * first sequence" in MEGA, like NEXUS). Deliberately lenient: never throws.
+ */
+export function parseMega(input: string | Uint8Array): SeqRecord[] {
+  const aln = new Alignment();
+  let current: string | undefined;
+  let inCommand = false; // inside a multi-line `!…;` directive
+  let inComment = false; // inside a `"…"` comment (MEGA allows it to span wrapped residue lines)
+  // Strip MEGA's `"…"` comments (carrying the open state across lines) and all whitespace.
+  const clean = (s: string): string => {
+    let out = '';
+    for (const c of s) {
+      if (inComment) {
+        if (c === '"') inComment = false;
+      } else if (c === '"') {
+        inComment = true;
+      } else {
+        out += c;
+      }
+    }
+    return out.replace(/\s+/g, '');
+  };
+  for (const line of toLines(input)) {
+    if (inComment) {
+      // Mid-comment: strip until it closes; whatever follows on this line is residues.
+      const res = clean(line);
+      if (current !== undefined && res) aln.add(current, res);
+      continue;
+    }
+    const t = line.trim();
+    if (t.length === 0) continue;
+    if (inCommand) {
+      if (t.includes(';')) inCommand = false; // directive ends at its ';'
+      continue;
+    }
+    if (/^#mega\b/i.test(t)) continue; // format header
+    if (t.startsWith('!')) {
+      if (!t.includes(';')) inCommand = true; // a directive that wraps onto later lines
+      continue;
+    }
+    if (t.startsWith('#')) {
+      // `#Name` optionally followed by residues on the same line.
+      const m = /^#(\S+)\s*(.*)$/.exec(t);
+      if (m) {
+        current = m[1];
+        const res = clean(m[2]);
+        if (res) aln.add(current, res);
+      }
+    } else if (current !== undefined) {
+      const res = clean(t); // wrapped residues for the current sequence
+      if (res) aln.add(current, res);
+    }
   }
   return aln.toRecords();
 }

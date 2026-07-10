@@ -24,11 +24,14 @@ export type SeqFileFormat =
   | 'phylip'
   | 'nexus'
   | 'msf'
+  | 'mega'
   | 'pir'
   | 'gff'
   | 'sam'
   | 'bam'
   | 'gfa'
+  | 'pdb'
+  | 'ace'
   | 'unknown';
 
 /** MacBinary preamble length: an ABIF may sit 128 bytes into the file behind one. */
@@ -87,6 +90,13 @@ function detectFromLine(raw: string): SeqFileFormat {
   // Alignment formats — each names itself on the first line, except PHYLIP (a "<ntax> <nchar>" line).
   if (/^#\s*STOCKHOLM/i.test(line)) return 'stockholm';
   if (/^#NEXUS/i.test(line)) return 'nexus';
+  if (/^#mega\b/i.test(line)) return 'mega';
+  // PDB: the HEADER record, or a coordinate file that opens on ATOM/HETATM/MODEL/CRYST1 (predicted
+  // models & fragments often carry no HEADER/SEQRES — their sequence is read from the ATOM records).
+  if (/^HEADER\s{2,}/.test(line)) return 'pdb';
+  if (/^(ATOM|HETATM)\s+\d+\s/.test(line) || /^MODEL\s+\d/.test(line) || /^CRYST1\s/.test(line)) return 'pdb';
+  // ACE assembly: the "AS <contigs> <reads>" header line.
+  if (/^AS\s+\d+\s+\d+\s*$/.test(line)) return 'ace';
   // Clustal-format alignments carry a program banner: Clustal itself, or MUSCLE/MAFFT/… which
   // emit the same layout. The generic "multiple sequence alignment" phrase is guarded against a
   // '>'/'@' sequence header that merely mentions it.

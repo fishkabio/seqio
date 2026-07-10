@@ -76,6 +76,12 @@ describe('detectFormat', () => {
     expect(detectFormat(ascii('..\nName:HBB_HUMAN\n//\nfgtggtrghtrfg gerg rg\n'))).toBe('unknown');
   });
 
+  it('detects MEGA (#mega), PDB (HEADER) and ACE (AS <n> <m>) from their leading line', () => {
+    expect(detectFormat(ascii('#mega\n!Title x;\n#s1 ACGT\n'))).toBe('mega');
+    expect(detectFormat(ascii('HEADER    HYDROLASE                               17-FEB-98   1A5H\n'))).toBe('pdb');
+    expect(detectFormat(ascii('AS 2 4\nCO 1 50 2 50 U\nACGT\n'))).toBe('ace');
+  });
+
   it('keeps an explicit CLUSTAL/MUSCLE banner as clustal even if an MSF-like Name: line follows', () => {
     // The MSF override applies only to the generic "multiple sequence alignment" phrase, never to a
     // real program banner (which is the stronger, definite signal).

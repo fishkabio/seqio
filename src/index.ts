@@ -1,4 +1,5 @@
 export * from './abif';
+export * from './ace';
 export * from './detect';
 export * from './embl';
 export * from './fastx';
@@ -6,6 +7,8 @@ export * from './genbank';
 export * from './gfa';
 export * from './gff';
 export * from './msa';
+export * from './pdb';
 export * from './pir';
 export * from './sam';
+export * from './scf';
 export * from './seq-record';

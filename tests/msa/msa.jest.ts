@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { parseClustal, parseMsf, parseNexus, parsePhylip, parseStockholm } from '../../src/msa';
+import { parseClustal, parseMega, parseMsf, parseNexus, parsePhylip, parseStockholm } from '../../src/msa';
 
 const fixture = (name: string): string => fs.readFileSync(path.join(__dirname, '..', 'fixtures', name), 'utf8');
 
@@ -30,6 +30,33 @@ describe('MSA readers (aligned row = record, gaps preserved)', () => {
     expect(parseNexus(fixture('align.nex'))).toEqual([
       { id: 'seq1', sequence: 'ACGT-ACGT' },
       { id: 'seq2', sequence: 'ACGTAACGT' },
+    ]);
+  });
+
+  it('parseMega reads interleaved #Name rows, skipping the #mega header and !directives', () => {
+    const meg = [
+      '#mega',
+      '!Title Example;',
+      '!Format DataType=DNA;',
+      '#taxonA ACGT ACGT',
+      '#taxonB ACGA A.GT',
+      '',
+      '#taxonA GGGG',
+      '#taxonB GG-G',
+    ].join('\n');
+    expect(parseMega(meg)).toEqual([
+      { id: 'taxonA', sequence: 'ACGTACGTGGGG' },
+      { id: 'taxonB', sequence: 'ACGAA.GTGG-G' },
+    ]);
+  });
+
+  it('parseMega handles a multi-line !directive and residues wrapped onto following lines', () => {
+    const meg = ['#mega', '!Title a title that', 'wraps across lines;', '#s1', 'ACGT', 'ACGT', '#s2', 'TTTTGGGG'].join(
+      '\n',
+    );
+    expect(parseMega(meg)).toEqual([
+      { id: 's1', sequence: 'ACGTACGT' },
+      { id: 's2', sequence: 'TTTTGGGG' },
     ]);
   });
 
