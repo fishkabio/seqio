@@ -1,7 +1,7 @@
 {
   "name": "@fishka/seqio",
   "description": "Sequencing file parsers and writers for bioinformatics data",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "license": "MIT",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
