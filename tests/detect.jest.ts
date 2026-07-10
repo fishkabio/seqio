@@ -65,6 +65,27 @@ describe('detectFormat', () => {
     expect(detectFormat(withBom)).toBe('fasta');
   });
 
+  it('detects SAM from a header line, and not as FASTQ despite the leading "@"', () => {
+    expect(detectFormat(ascii('@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:100\n'))).toBe('sam');
+    // A FASTQ read id also starts with '@' but is not a two-letter SAM tag + TAB.
+    expect(detectFormat(ascii('@read1\nACGT\n+\nIIII\n'))).toBe('fastq');
+  });
+
+  it('detects headerless SAM from the mandatory-field structure', () => {
+    expect(detectFormat(ascii('read1\t0\tchr1\t1000\t60\t8M\t*\t0\t0\tACGTACGT\tIIIIIIII\n'))).toBe('sam');
+  });
+
+  it('detects GFA from the version header or a headerless Segment line', () => {
+    expect(detectFormat(ascii('H\tVN:Z:1.0\nS\ts1\tACGT\n'))).toBe('gfa');
+    expect(detectFormat(ascii('S\ts1\tACGTACGT\tLN:i:8\n'))).toBe('gfa');
+    // VN:Z: need not be the first tag on the H line.
+    expect(detectFormat(ascii('H\tTS:i:1\tVN:Z:1.0\n'))).toBe('gfa');
+  });
+
+  it('detects BAM from its "BAM\\1" magic (present once BGZF has been inflated)', () => {
+    expect(detectFormat(new Uint8Array([0x42, 0x41, 0x4d, 0x01, 0, 0, 0, 0]))).toBe('bam');
+  });
+
   it('returns "unknown" for empty input and non-matching content', () => {
     expect(detectFormat(new Uint8Array(0))).toBe('unknown');
     expect(detectFormat(ascii('hello world'))).toBe('unknown');
