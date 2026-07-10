@@ -168,7 +168,15 @@ export function parseMsf(input: string | Uint8Array): SeqRecord[] {
     }
     if (isBlank(line)) continue;
     const m = /^\s*(\S+)\s+(.+)$/.exec(line);
-    if (m) aln.add(m[1], m[2].replace(/\s+/g, '')); // name + space-grouped residues (gaps '.'/'~' kept)
+    if (!m) continue;
+    const residues = m[2].replace(/\s+/g, ''); // space-grouped residues (gaps '.'/'~' kept)
+    // Skip the position rulers / coordinate lines GCG & GeneDoc interleave between blocks
+    // ("        1        50"): they carry digits, which real residue runs never do. This stays
+    // lenient (every genuine row is kept, even if the header's Name: labels were truncated) while
+    // dropping the only systematic noise. (A row's name IS allowed to contain digits — only the
+    // residue field is guarded.)
+    if (/\d/.test(residues)) continue;
+    aln.add(m[1], residues);
   }
   return aln.toRecords();
 }

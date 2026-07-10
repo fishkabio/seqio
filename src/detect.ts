@@ -49,8 +49,33 @@ export function detectFormat(bytes: Uint8Array): SeqFileFormat {
   // this matches only once that wrapper has been inflated — the caller peels gzip before detecting.
   if (hasAscii(bytes, 0, 'BAM\x01')) return 'bam';
   const line = firstNonBlankLine(bytes);
-  return line === undefined ? 'unknown' : detectFromLine(line);
+  if (line === undefined) return 'unknown';
+  const detected = detectFromLine(line);
+  // GCG/MSF permits free descriptive text (and GeneDoc `GDC` blocks) before its header, so the
+  // signature isn't always on the first line — scan the window for the strong MSF signature. It wins
+  // over an 'unknown' first line, and over a 'clustal' guess that came ONLY from the generic
+  // "multiple sequence alignment" phrase (which an MSF preamble can carry) — but never over an
+  // explicit CLUSTAL/MUSCLE/… banner or any other definite first-line format.
+  const weakClustal = detected === 'clustal' && !CLUSTAL_BANNER.test(line.trimStart());
+  if ((detected === 'unknown' || weakClustal) && hasMsfHeader(bytes)) return 'msf';
+  return detected;
 }
+
+/** Whether the sniff window looks like a GCG/MSF file. */
+function hasMsfHeader(bytes: Uint8Array): boolean {
+  const head = bytes.length > SNIFF_BYTES ? bytes.subarray(0, SNIFF_BYTES) : bytes;
+  const text = decodeText(head);
+  // Canonical header line ("… MSF: <len> … Check: <n> ..") backed by a Name:/Len: declaration, OR —
+  // for files whose "MSF:" line is missing/mangled — a full GCG name declaration
+  // ("Name: <id> Len: <n> Check: <n> Weight:"), a pattern unique to MSF/GCG (so it's a safe
+  // signature on its own; a garbage file with a bare "Name:HBB_HUMAN" won't match it).
+  const headerLine = /\bMSF:\s*\d+\b[^\n]*\bCheck:\s*\d/.test(text) && /^\s*Name:\s+.*\bLen:\s*\d/im.test(text);
+  const nameDecl = /^\s*Name:\s+\S+\s+Len:\s*\d+\s+Check:\s*\d+\s+Weight:/im.test(text);
+  return headerLine || nameDecl;
+}
+
+/** Program banners that head a Clustal-format alignment (Clustal and the tools that emit its layout). */
+const CLUSTAL_BANNER = /^(CLUSTAL|MUSCLE|MAFFT|T-?COFFEE|PROBCONS|KALIGN|MVIEW|PROMALS)\b/i;
 
 /** Classify a text file from its first non-blank line (leading whitespace ignored). */
 function detectFromLine(raw: string): SeqFileFormat {
@@ -65,8 +90,10 @@ function detectFromLine(raw: string): SeqFileFormat {
   // Clustal-format alignments carry a program banner: Clustal itself, or MUSCLE/MAFFT/… which
   // emit the same layout. The generic "multiple sequence alignment" phrase is guarded against a
   // '>'/'@' sequence header that merely mentions it.
-  if (/^(CLUSTAL|MUSCLE|MAFFT|T-?COFFEE|PROBCONS|KALIGN|MVIEW|PROMALS)\b/i.test(line)) return 'clustal';
-  if (/multiple (sequence )?alignment/i.test(line) && !/^[>@#]/.test(line)) return 'clustal';
+  if (CLUSTAL_BANNER.test(line)) return 'clustal';
+  // …but not the GeneDoc editor's own "Multiple Sequence Alignment Editor" banner, which heads GCG/MSF
+  // files (they're detected as 'msf' via the header scan, not here).
+  if (/multiple (sequence )?alignment/i.test(line) && !/^[>@#]/.test(line) && !/genedoc/i.test(line)) return 'clustal';
   if (/^!!(NA|AA)_MULTIPLE_ALIGNMENT/i.test(line) || /\bMSF:\s*\d/.test(line)) return 'msf';
   if (/^\d+\s+\d+\s*$/.test(line)) return 'phylip';
   if (/^##gff-version/i.test(line)) return 'gff';

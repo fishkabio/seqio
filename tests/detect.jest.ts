@@ -46,6 +46,43 @@ describe('detectFormat', () => {
     expect(detectFormat(fixtureBytes('align.msf'))).toBe('msf');
   });
 
+  it('detects MSF when a free-text / GeneDoc preamble precedes the header (not on line 1)', () => {
+    // GCG/MSF allows descriptive text (and GeneDoc GDC blocks) before the "MSF: … Check:" header, so
+    // the signature isn't on the first line — and the GeneDoc banner must not be mistaken for Clustal.
+    const msf = [
+      'GCG MSF file of project DEMO — free descriptive text',
+      'GDC ****** GeneDoc Multiple Sequence Alignment Editor ******',
+      '',
+      '  demo.msf  MSF: 9  Type: P  Check: 0  ..',
+      ' Name: seq1  Len: 9  Check: 0  Weight: 1.00',
+      ' Name: seq2  Len: 9  Check: 0  Weight: 1.00',
+      '//',
+      'seq1  ACGT.ACGT',
+      'seq2  ACGTAACGT',
+    ].join('\n');
+    expect(detectFormat(ascii(msf))).toBe('msf');
+  });
+
+  it('detects a GCG/MSF whose "MSF:" header line is missing via the Name:/Len:/Check:/Weight: block', () => {
+    // Some MSF exports mangle/omit the "MSF:" line but keep the GCG name declarations — an
+    // MSF-specific signature we can key on so a real alignment still loads.
+    const msf = ['//.. stray text', '..', ' Name: seq1  Len: 8  Check: 10  Weight: 1.00', '//', 'seq1  ACGTACGT'].join(
+      '\n',
+    );
+    expect(detectFormat(ascii(msf))).toBe('msf');
+  });
+
+  it('does NOT take a garbage file with a bare "Name:x" (no Len:/Check:/Weight:) for MSF', () => {
+    expect(detectFormat(ascii('..\nName:HBB_HUMAN\n//\nfgtggtrghtrfg gerg rg\n'))).toBe('unknown');
+  });
+
+  it('keeps an explicit CLUSTAL/MUSCLE banner as clustal even if an MSF-like Name: line follows', () => {
+    // The MSF override applies only to the generic "multiple sequence alignment" phrase, never to a
+    // real program banner (which is the stronger, definite signal).
+    const banner = 'MUSCLE (3.8) multiple sequence alignment\n Name: x  Len: 5  Check: 1  Weight: 1.0\n//\nx  ACGTA\n';
+    expect(detectFormat(ascii(banner))).toBe('clustal');
+  });
+
   it('detects PIR (by the >XX; type code) and GFF3 (##gff-version), not as FASTA', () => {
     expect(detectFormat(fixtureBytes('records.pir'))).toBe('pir');
     expect(detectFormat(fixtureBytes('annot.gff3'))).toBe('gff');
