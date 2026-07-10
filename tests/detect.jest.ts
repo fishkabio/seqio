@@ -82,6 +82,33 @@ describe('detectFormat', () => {
     expect(detectFormat(ascii('AS 2 4\nCO 1 50 2 50 U\nACGT\n'))).toBe('ace');
   });
 
+  it('detects PDB by a coordinate/SEQRES record when line 1 is not classifiable', () => {
+    // Bare `MODEL` (no serial) then an ATOM coordinate line — 1MOT-style ptools output.
+    expect(detectFormat(ascii('MODEL \nATOM      1  N   ALA A 249       3.679 -15.582   2.213\n'))).toBe('pdb');
+    // I-TASSER `HEADER protein` (single space) then REMARK prose, then an ATOM line.
+    expect(
+      detectFormat(ascii('HEADER protein\nMETHOD\nATOM      1  N   VAL A   1      37.640   0.000   0.000\n')),
+    ).toBe('pdb');
+    // A SEQRES-led file with no HEADER at all — including one with a BLANK chain id (valid PDB).
+    expect(detectFormat(ascii('REMARK something\nSEQRES   1 A    3  SER GLU HIS\n'))).toBe('pdb');
+    expect(detectFormat(ascii('REMARK x\nSEQRES   1      3  ALA GLY SER\n'))).toBe('pdb');
+  });
+
+  it('does not mistake prose that merely mentions ATOM/CRYST1 for PDB', () => {
+    // No coordinate triplet / structured fields → stays unknown (hardened signatures).
+    expect(detectFormat(ascii('Some report\nATOM 1 is an example record\nCRYST1 notes here\n'))).toBe('unknown');
+  });
+
+  it('detects a headerless GFF (no ##gff-version) by its ##FASTA directive + FASTA record', () => {
+    const gff = 'chr1\tsrc\tgene\t1\t9\t.\t+\t.\tID=g1\n##FASTA\n>chr1\nACGTACGTA\n';
+    expect(detectFormat(ascii(gff))).toBe('gff');
+    // A bare "##FASTA" line with no following FASTA record is not enough (e.g. prose/README).
+    expect(detectFormat(ascii('notes about ##FASTA sections\n##FASTA\nnothing follows\n'))).toBe('unknown');
+    // "##FASTA" appearing only mid-sentence (not as a directive line) must not match, even with a
+    // later ">" FASTA example.
+    expect(detectFormat(ascii('##FASTA is an example directive\n>example\nACGT\n'))).toBe('unknown');
+  });
+
   it('keeps an explicit CLUSTAL/MUSCLE banner as clustal even if an MSF-like Name: line follows', () => {
     // The MSF override applies only to the generic "multiple sequence alignment" phrase, never to a
     // real program banner (which is the stronger, definite signal).

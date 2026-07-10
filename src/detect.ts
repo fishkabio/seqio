@@ -61,7 +61,45 @@ export function detectFormat(bytes: Uint8Array): SeqFileFormat {
   // explicit CLUSTAL/MUSCLE/… banner or any other definite first-line format.
   const weakClustal = detected === 'clustal' && !CLUSTAL_BANNER.test(line.trimStart());
   if ((detected === 'unknown' || weakClustal) && hasMsfHeader(bytes)) return 'msf';
+  // A PDB file's first line isn't always the classifiable one: a bare `MODEL` (no serial), an
+  // I-TASSER-style `HEADER protein` (single space), or leading REMARK/METHOD prose all fall through
+  // to 'unknown' on line 1. Scan the window for a definitive coordinate/SEQRES record instead.
+  if (detected === 'unknown' && hasPdbSignal(bytes)) return 'pdb';
+  // A GFF3 file exported without the leading `##gff-version` pragma still marks its embedded
+  // sequence with a `##FASTA` directive followed by FASTA records. Requiring the `>` record after
+  // the directive (not the bare `##FASTA` line, which a README/report could carry) keeps this safe
+  // and aligns detection with parseability — the sequence lives only in that section.
+  if (detected === 'unknown' && hasGffFastaSection(bytes)) return 'gff';
   return detected;
+}
+
+/** Whether the sniff window has a GFF3 `##FASTA` directive LINE followed by a `>` FASTA record. */
+function hasGffFastaSection(bytes: Uint8Array): boolean {
+  const head = bytes.length > SNIFF_BYTES ? bytes.subarray(0, SNIFF_BYTES) : bytes;
+  // Anchor the directive to its own line (`$`) so a prose "##FASTA is an example" can't match; then
+  // require an actual FASTA record (`^>`) somewhere after it.
+  return /^##FASTA[ \t]*$[\s\S]*?^>/m.test(decodeText(head));
+}
+
+/** Whether the sniff window carries a definitive PDB coordinate/sequence record. */
+function hasPdbSignal(bytes: Uint8Array): boolean {
+  const head = bytes.length > SNIFF_BYTES ? bytes.subarray(0, SNIFF_BYTES) : bytes;
+  const text = decodeText(head);
+  // Match the *structure* PDB records carry, not just the keyword — so a prose/log line that merely
+  // begins with "ATOM 1 …" or "CRYST1 …" can't trip detection (per review). Each pattern requires
+  // fields that only a real record has:
+  //   ATOM/HETATM — serial, then the x/y/z coordinate triplet (three `%8.3f` floats);
+  //   SEQRES      — serNum, a single-char chain id, numRes, then a residue code;
+  //   CRYST1      — the three unit-cell edge lengths (floats).
+  // Inter-field spacing is `[ \t]` (never `\s`, which would let a match span a line boundary on
+  // malformed input) so each signature stays strictly within one line.
+  const coord = /-?\d+\.\d{3}/.source;
+  const atom = new RegExp(`^(ATOM|HETATM)[ \\t]+\\d+[ \\t].*[ \\t]${coord}[ \\t]+${coord}[ \\t]+${coord}`, 'm');
+  // SEQRES: serNum, an OPTIONAL single-char chain id (PDB allows a blank chain — don't require a
+  // non-space token, or single-chain files are missed), numRes, then a residue code.
+  const seqres = /^SEQRES[ \t]+\d+[ \t]+(?:\S[ \t]+)?\d+[ \t]+[A-Za-z]/m;
+  const cryst1 = /^CRYST1[ \t]+\d+\.\d+[ \t]+\d+\.\d+[ \t]+\d+\.\d+/m;
+  return atom.test(text) || seqres.test(text) || cryst1.test(text);
 }
 
 /** Whether the sniff window looks like a GCG/MSF file. */
