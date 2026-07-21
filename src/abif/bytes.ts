@@ -17,6 +17,35 @@ export function asciiBytes(s: string): Uint8Array {
   return out;
 }
 
+/** Strict UTF-8 decoder — throws on any invalid sequence instead of substituting U+FFFD. */
+const utf8 = new TextDecoder('utf-8', { fatal: true });
+
+/**
+ * Decode the payload of a text tag (char / pString / cString).
+ *
+ * ABIF fixes no encoding for its string types — the spec says ASCII, but instruments write whatever
+ * their locale produces: UTF-8 (Nanofor writes cyrillic that way), Latin-1, Shift-JIS. So we sniff:
+ * bytes that decode as strict UTF-8 are UTF-8, anything else falls back to the byte-per-character
+ * reading that has always been used here (Latin-1). Pure ASCII decodes identically either way.
+ *
+ * The guess is not infallible — a Latin-1 payload that happens to satisfy UTF-8's multi-byte structure
+ * (`C3 A9`, i.e. "Ã©") reads back as "é". Single high bytes, the common Latin-1 case, do not decode as
+ * UTF-8 and so take the fallback. Encoding is not stored anywhere, so a heuristic is the only option
+ * short of an explicit setting; the raw layer keeps the original bytes either way.
+ */
+export function decodeAbifText(bytes: Uint8Array): string {
+  try {
+    return utf8.decode(bytes);
+  } catch {
+    return asciiString(bytes);
+  }
+}
+
+/** Encode text for a string tag as UTF-8 — the counterpart of {@link decodeAbifText}. */
+export function encodeAbifText(s: string): Uint8Array {
+  return new TextEncoder().encode(s);
+}
+
 /** Returns a DataView over the given bytes, regardless of input shape. */
 export function asDataView(bytes: Uint8Array): DataView {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

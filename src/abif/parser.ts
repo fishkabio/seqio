@@ -11,7 +11,7 @@
  */
 
 import { readAbif } from './abif-format';
-import { asciiString, asDataView, subview } from './bytes';
+import { asDataView, decodeAbifText, subview } from './bytes';
 import {
   AbifBaseCalls,
   AbifBaseCallVariant,
@@ -100,8 +100,11 @@ function decodePayload(elementType: number, elementCount: number, payload: Uint8
     }
     case 2:
     case 19: {
-      const s = asciiString(payload.subarray(0, elementCount)).replace(/\0+$/g, '');
-      return { kind: 'string', value: s };
+      // Trim the NUL terminator/padding before decoding — a stray NUL is not part of the text.
+      const raw = payload.subarray(0, elementCount);
+      let end = raw.length;
+      while (end > 0 && raw[end - 1] === 0) end--;
+      return { kind: 'string', value: decodeAbifText(raw.subarray(0, end)) };
     }
     case 3:
       return decodeNumeric(payload.byteLength, elementCount, 2, o => view.getUint16(o, false));
@@ -143,7 +146,7 @@ function decodePayload(elementType: number, elementCount: number, payload: Uint8
       // pString = length prefix + chars; an empty payload is just the empty string.
       if (payload.byteLength < 1) return { kind: 'string', value: '' };
       const len = view.getUint8(0);
-      const s = asciiString(subview(payload, 1, Math.min(len, Math.max(0, elementCount - 1))));
+      const s = decodeAbifText(subview(payload, 1, Math.min(len, Math.max(0, elementCount - 1))));
       return { kind: 'string', value: s };
     }
     default:
